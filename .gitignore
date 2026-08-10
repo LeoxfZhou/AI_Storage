@@ -1,0 +1,17 @@
+# 原始数据体积较大，并且通常不适合直接进入 Git 历史。
+# 使用从仓库根目录开始的精确路径，避免误伤其他可能叫 datas 的目录。
+/tube_inspection/datas/
+
+# 检测输入和输出图片属于本地数据，不进入 Git 历史。
+# 按扩展名忽略可以覆盖 datas、results 和 example_results，
+# 也能防止以后在其他目录新增同类图片时被误提交。
+*.jpg
+*.jpeg
+*.bmp
+
+# macOS 会自动生成这些目录元数据文件，它们与项目功能无关。
+.DS_Store
+
+# Python 运行时自动生成的字节码缓存；不同电脑上可以重新生成。
+__pycache__/
+*.py[cod]

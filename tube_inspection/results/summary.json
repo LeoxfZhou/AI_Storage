@@ -1,0 +1,182 @@
+[
+  {
+    "defect_type": "NORMAL",
+    "defect_type_cn": "正常",
+    "location_bbox": [
+      1545,
+      804,
+      506,
+      1112
+    ],
+    "location_description": "试管主体区域（未发现缺陷）",
+    "feature_description": "蓝色管身中心线曲率未超过标定阈值，且其余缺陷分支不适用于该工位。",
+    "feature_values": {
+      "tube_angle_degrees": 82.99,
+      "tube_width_ratio": 0.096,
+      "saturated_blue_ratio": 0.0395,
+      "curvature_ratio": 0.00313
+    },
+    "alignment_score": 0.0,
+    "visualization_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/results/01_01_result.jpg",
+    "image_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/datas/01_01.bmp"
+  },
+  {
+    "defect_type": "BENDING",
+    "defect_type_cn": "弯曲",
+    "location_bbox": [
+      1475,
+      829,
+      490,
+      1112
+    ],
+    "location_description": "蓝色管身由直段转入弯段后的中下部",
+    "feature_description": "管身中心线最大弯曲率为 0.680%，超过标定阈值 0.500%；弯曲从蓝色管段开始并向下延伸。",
+    "feature_values": {
+      "tube_angle_degrees": 85.43,
+      "tube_width_ratio": 0.08,
+      "saturated_blue_ratio": 0.0401,
+      "curvature_ratio": 0.0068
+    },
+    "alignment_score": 0.0,
+    "visualization_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/results/01_02_result.jpg",
+    "image_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/datas/01_02.bmp"
+  },
+  {
+    "defect_type": "DARK_SPOT",
+    "defect_type_cn": "暗斑",
+    "location_bbox": [
+      1874,
+      800,
+      71,
+      88
+    ],
+    "location_description": "倾斜窄管中部偏下的棕褐色斑点",
+    "feature_description": "发现棕褐色紧凑区域，局部比周围暗 25.1 灰度级，平均饱和度为 85.8。",
+    "feature_values": {
+      "tube_angle_degrees": 66.95,
+      "tube_width_ratio": 0.0833,
+      "saturated_blue_ratio": 0.0086,
+      "area_px_working": 245.0,
+      "mean_saturation": 85.75,
+      "local_darkness": 25.15
+    },
+    "alignment_score": 0.0,
+    "visualization_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/results/02_01_result.jpg",
+    "image_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/datas/02_01.bmp"
+  },
+  {
+    "defect_type": "DARK_SPOT",
+    "defect_type_cn": "暗斑",
+    "location_bbox": [
+      1874,
+      802,
+      71,
+      88
+    ],
+    "location_description": "倾斜窄管中部偏下的棕褐色斑点",
+    "feature_description": "发现棕褐色紧凑区域，局部比周围暗 25.3 灰度级，平均饱和度为 85.4。",
+    "feature_values": {
+      "tube_angle_degrees": 66.98,
+      "tube_width_ratio": 0.0834,
+      "saturated_blue_ratio": 0.0086,
+      "area_px_working": 243.0,
+      "mean_saturation": 85.42,
+      "local_darkness": 25.31
+    },
+    "alignment_score": 0.0,
+    "visualization_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/results/02_02_result.jpg",
+    "image_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/datas/02_02.bmp"
+  },
+  {
+    "defect_type": "SCRATCH",
+    "defect_type_cn": "划痕",
+    "location_bbox": [
+      1806,
+      783,
+      253,
+      140
+    ],
+    "location_description": "水平管身中部的 V 形亮痕区域",
+    "feature_description": "亮顶帽对比度为 37.4 灰度级，发现与长条管壁反光不同的紧凑 V 形亮痕。",
+    "feature_values": {
+      "tube_angle_degrees": 0.0,
+      "tube_width_ratio": 0.13,
+      "saturated_blue_ratio": 0.0024,
+      "area_px_working": 1588.0,
+      "top_hat_contrast": 37.39,
+      "bbox_aspect": 2.031
+    },
+    "alignment_score": 0.0,
+    "visualization_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/results/3_01_result.jpg",
+    "image_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/datas/3_01.bmp"
+  },
+  {
+    "defect_type": "SCRATCH",
+    "defect_type_cn": "划痕",
+    "location_bbox": [
+      1898,
+      829,
+      110,
+      90
+    ],
+    "location_description": "水平管身中部的 V 形亮痕区域",
+    "feature_description": "亮顶帽对比度为 40.8 灰度级，发现与长条管壁反光不同的紧凑 V 形亮痕。",
+    "feature_values": {
+      "tube_angle_degrees": 0.0,
+      "tube_width_ratio": 0.0825,
+      "saturated_blue_ratio": 0.0021,
+      "area_px_working": 666.0,
+      "top_hat_contrast": 40.79,
+      "bbox_aspect": 1.286
+    },
+    "alignment_score": 0.0,
+    "visualization_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/results/3_02_result.jpg",
+    "image_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/datas/3_02.bmp"
+  },
+  {
+    "defect_type": "INCLUSION",
+    "defect_type_cn": "杂质",
+    "location_bbox": [
+      1715,
+      712,
+      105,
+      103
+    ],
+    "location_description": "倾斜宽管中部的黑色颗粒聚集区",
+    "feature_description": "暗底帽对比度为 44.8 灰度级，区域紧凑且呈黑色颗粒簇，符合管内杂质特征。",
+    "feature_values": {
+      "tube_angle_degrees": 75.04,
+      "tube_width_ratio": 0.1335,
+      "saturated_blue_ratio": 0.0058,
+      "particle_cluster_area_px_working": 322.0,
+      "black_hat_contrast": 44.84,
+      "cluster_aspect": 1.036
+    },
+    "alignment_score": 0.0,
+    "visualization_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/results/4_01_result.jpg",
+    "image_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/datas/4_01.bmp"
+  },
+  {
+    "defect_type": "INCLUSION",
+    "defect_type_cn": "杂质",
+    "location_bbox": [
+      1717,
+      710,
+      103,
+      105
+    ],
+    "location_description": "倾斜宽管中部的黑色颗粒聚集区",
+    "feature_description": "暗底帽对比度为 44.3 灰度级，区域紧凑且呈黑色颗粒簇，符合管内杂质特征。",
+    "feature_values": {
+      "tube_angle_degrees": 75.01,
+      "tube_width_ratio": 0.1332,
+      "saturated_blue_ratio": 0.0057,
+      "particle_cluster_area_px_working": 358.0,
+      "black_hat_contrast": 44.33,
+      "cluster_aspect": 1.036
+    },
+    "alignment_score": 0.0,
+    "visualization_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/results/4_02_result.jpg",
+    "image_path": "/Users/leozhou/Desktop/AIStorage/tube_inspection/datas/4_02.bmp"
+  }
+]

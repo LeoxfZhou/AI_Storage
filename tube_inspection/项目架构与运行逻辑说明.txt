@@ -1,0 +1,1821 @@
+试管缺陷检测项目：文件架构、函数作用与运行逻辑
+==================================================
+
+一、项目总体目标
+--------------
+
+本项目使用 OpenCV 对试管图片进行传统机器视觉检测，输出以下信息：
+
+1. 图片属于正常、弯曲、暗斑、划痕、杂质中的哪一种；
+2. 缺陷位于原图的什么位置；
+3. 缺陷具有什么可解释的图像特征；
+4. 保存带红框（缺陷）或绿框（正常）的结果图；
+5. 支持单张图片检测和目录批量检测。
+
+项目有两套检测路径：
+
+1. datas 数据集标定路径：
+   针对目前四种拍摄工位，先识别管件姿态，再分别使用曲率、HSV、亮顶帽、
+   暗底帽检测弯曲、暗斑、划痕和杂质。这是当前 8 张图片实际使用的主路径。
+
+2. 通用模板差分回退路径：
+   如果新图片不像当前四个已标定工位，则将图片与良品模板对齐，提取差分区域，
+   再通过四棵判据树分类。它用于避免未知图片被强行套用当前数据集规则。
+
+
+二、项目目录结构
+----------------
+
+tube_inspection/
+│
+├── __init__.py
+├── __main__.py
+├── cli.py
+├── config.py
+├── detector.py
+├── geometry.py
+├── models.py
+├── 说明.txt
+├── 项目架构与运行逻辑说明.txt
+│
+├── datas/
+│   ├── 01_01.bmp
+│   ├── 01_02.bmp
+│   ├── 02_01.bmp
+│   ├── 02_02.bmp
+│   ├── 3_01.bmp
+│   ├── 3_02.bmp
+│   ├── 4_01.bmp
+│   └── 4_02.bmp
+│
+├── example_results/
+│   ├── 01_02(wanqu).bmp
+│   ├── 02_01(anban).bmp
+│   ├── 3_01(huahen).bmp
+│   └── 4_01(zazhi).bmp
+│
+├── results/
+│   ├── 01_01_result.jpg
+│   ├── 01_02_result.jpg
+│   ├── 02_01_result.jpg
+│   ├── 02_02_result.jpg
+│   ├── 3_01_result.jpg
+│   ├── 3_02_result.jpg
+│   ├── 4_01_result.jpg
+│   ├── 4_02_result.jpg
+│   └── summary.json
+│
+├── __pycache__/
+├── .idea/
+└── .DS_Store
+
+
+三、每个文件和目录的作用
+------------------------
+
+1. __init__.py
+
+   这是 Python 包的公共接口文件。
+
+   它从其他模块导出：
+
+   - DetectorConfig：检测参数配置类；
+   - TubeDefectDetector：完整检测器类；
+   - detect_tube：最简单的一行式检测函数。
+
+   因此可以在项目父目录这样使用：
+
+       from tube_inspection import detect_tube
+
+   __all__ 用来明确声明这个包希望暴露给调用者的名称，避免调用者依赖内部函数。
+
+
+2. __main__.py
+
+   这是执行“python3 -m tube_inspection”时使用的入口。
+
+   它只做一件事：
+
+   - 从 cli.py 导入 main；
+   - 调用 main；
+   - 将 main 的返回值作为程序退出状态码。
+
+   它不包含图像检测算法，只负责把模块运行转交给命令行程序。
+
+
+3. cli.py
+
+   这是命令行交互层，负责：
+
+   - 解析用户输入参数；
+   - 判断运行单张模式还是批量模式；
+   - 创建检测器；
+   - 调用 detector.py；
+   - 保存 JSON；
+   - 打印检测摘要；
+   - 处理文件不存在、图片损坏等错误。
+
+   它不负责具体判断缺陷，真正算法都在 detector.py。
+
+
+4. config.py
+
+   这是全部可调检测参数的集中配置文件。
+
+   参数被放在 DetectorConfig 数据类中，主要分成：
+
+   - 图像缩放和管身定位参数；
+   - ECC 模板对齐参数；
+   - 模板差分和形态学参数；
+   - datas 四个工位的分流参数；
+   - 弯曲、暗斑、划痕、杂质判定阈值；
+   - 结果图字体和线宽参数。
+
+   集中配置的原因是避免在 detector.py 中散落大量“魔法数字”。更换相机、光源、
+   产品或分辨率后，应优先在这个文件中重新标定参数。
+
+
+5. models.py
+
+   这是数据模型层，用 dataclass 定义检测过程中传递的数据结构：
+
+   - TubePose：管身姿态；
+   - CandidateFeature：一个候选缺陷区域的图像特征；
+   - DiagnosticResult：最终诊断结果。
+
+   它只定义数据长什么样，不执行图像检测。
+
+
+6. geometry.py
+
+   这是图像读写和二维几何工具层，负责：
+
+   - 支持中文路径的 OpenCV 图片读取和保存；
+   - 多边形掩膜生成；
+   - 仿射矩阵组合、求逆和点坐标变换；
+   - 根据管身姿态生成旋转矩形；
+   - 将模板坐标映射回原图坐标；
+   - 计算并裁剪最终外接框。
+
+   detector.py 调用这些函数完成坐标系统之间的转换。
+
+
+7. detector.py
+
+   这是项目的核心算法文件，包含：
+
+   - 良品模板初始化；
+   - 管身定位；
+   - 图像缩放和预处理；
+   - 模板配准；
+   - 图像差分和候选区域提取；
+   - 中心线曲率计算；
+   - 四种缺陷判据树；
+   - 当前 datas 数据集专用的四分支检测；
+   - 坐标映射；
+   - 结果图绘制；
+   - 文本报告输出；
+   - 检测器缓存。
+
+   这个文件是程序最重要、执行逻辑最集中的部分。
+
+
+8. 说明.txt
+
+   这是面向使用者的简要说明，包括：
+
+   - 当前 8 张样本的正确标签；
+   - 单张和批量运行命令；
+   - 输出文件说明；
+   - 算法总体思路；
+   - 当前数据量过少所带来的使用边界。
+
+
+9. datas/
+
+   原始输入数据目录，共 8 张 BMP 图片：
+
+   - 01_01.bmp：正常，也是默认良品模板；
+   - 01_02.bmp：弯曲；
+   - 02_01.bmp、02_02.bmp：暗斑；
+   - 3_01.bmp、3_02.bmp：划痕；
+   - 4_01.bmp、4_02.bmp：杂质。
+
+
+10. example_results/
+
+    用户提供的示例标注图片，用来理解四种缺陷的正确位置和名称。
+
+    程序运行时不会直接读取这些图片。它们是开发、调参和人工核对时的参考资料。
+
+
+11. results/
+
+    程序批量检测后生成的输出目录。
+
+    - *_result.jpg：带缺陷框和类别文字的结果图片；
+    - summary.json：8 张图的结构化检测汇总。
+
+    缺陷使用红框，正常图片使用绿框。
+
+
+12. __pycache__/
+
+    Python 自动生成的字节码缓存目录，用于加快模块再次加载。
+
+    它不是项目源码，可以删除；下次运行 Python 时会自动重新生成。
+
+
+13. .idea/
+
+    PyCharm/IntelliJ 的项目配置目录，保存编辑器工作区和项目设置。
+
+    它不参与检测算法，也不影响命令行运行。
+
+
+14. .DS_Store
+
+    macOS Finder 自动生成的目录显示配置文件，与项目算法无关。
+
+
+四、models.py 中每个类和函数的作用
+----------------------------------
+
+1. TubePose
+
+   表示一根试管在图片中的几何姿态，字段包括：
+
+   - center：管身中心坐标 (x, y)；
+   - angle：管身主轴相对 x 轴的弧度；
+   - length：检测到的管身长度；
+   - width：检测到的管身宽度；
+   - polygon：管身旋转外接矩形的四个顶点。
+
+   后面的掩膜、曲率、候选筛选和坐标映射都会使用这个对象。
+
+
+2. CandidateFeature
+
+   表示模板差分流程中一个可能的缺陷连通域。
+
+   保存的特征包括：
+
+   - contour：连通域轮廓；
+   - polygon：最小旋转外接矩形；
+   - bbox：普通外接框；
+   - area_px：像素面积；
+   - area_ratio：面积占管身比例；
+   - length_px、width_px：候选长度和宽度；
+   - aspect：长宽比；
+   - solidity：实心度；
+   - mean_difference、max_difference：与模板的差异；
+   - mean_darkness：比模板暗多少；
+   - color_delta：Lab 总色差；
+   - chroma_delta：Lab 色度差；
+   - gradient_coherence：梯度方向一致性。
+
+   public_values()
+
+   - 将内部候选特征转换为适合 JSON 和报告输出的字典；
+   - 对浮点数进行适当四舍五入；
+   - 不输出 contour 等不能直接 JSON 序列化的大型 NumPy 数据。
+
+
+3. DiagnosticResult
+
+   表示一次完整检测的最终结果，字段包括：
+
+   - defect_type：英文类别代码；
+   - defect_type_cn：中文类别；
+   - location_bbox：原图坐标 [x, y, width, height]；
+   - location_description：人类可读的位置说明；
+   - feature_description：为什么判为该缺陷；
+   - feature_values：具体图像特征值；
+   - alignment_score：模板配准分数；标定路径不做模板配准时为 0；
+   - visualization_path：结果图保存路径。
+
+   to_dict()
+
+   - 使用 asdict 将 dataclass 转为普通字典；
+   - 对 alignment_score 做四舍五入；
+   - 未保存可视化图片时，删除空的 visualization_path 字段；
+   - 返回可以直接打印或写入 JSON 的最终结果。
+
+
+五、geometry.py 中每个函数的作用
+--------------------------------
+
+1. imread_unicode(path)
+
+   - 检查图片文件是否存在；
+   - 使用 np.fromfile 读取字节，再用 cv2.imdecode 解码；
+   - 这种方式比 cv2.imread 更可靠地支持中文和空格路径；
+   - 文件不存在时抛出 FileNotFoundError；
+   - 图片无法解码时抛出 ValueError。
+
+
+2. imwrite_unicode(path, image)
+
+   - 创建输出文件的父目录；
+   - 根据扩展名使用 cv2.imencode 编码；
+   - 使用 tofile 写入，支持中文路径；
+   - 返回保存后的绝对路径；
+   - 编码失败时抛出 OSError。
+
+
+3. polygon_mask(shape, polygon)
+
+   - 创建一张全黑单通道图片；
+   - 将给定多边形内部填充为白色 255；
+   - 返回 ROI 掩膜；
+   - 用于只在管身内部计算特征，排除背景。
+
+
+4. transform_points(points, matrix)
+
+   - 使用 2×3 仿射矩阵转换一组二维点；
+   - 常用于将缺陷框从模板坐标映射到工作图或原图坐标。
+
+
+5. invert_affine(matrix)
+
+   - 求 2×3 仿射变换的逆矩阵；
+   - 例如已知“输入图到模板”的变换时，用它得到“模板到输入图”的变换。
+
+
+6. compose_affine(after, before)
+
+   - 组合两个仿射变换；
+   - 返回 after(before(x)) 对应的矩阵；
+   - 例如把“模板到工作图”和“工作图到原图”合成为“模板到原图”。
+
+
+7. pose_polygon(center, angle, length, width)
+
+   - 根据中心、角度、长度和宽度创建旋转矩形；
+   - 使用 cv2.boxPoints 得到四个角点；
+   - 用于表示管身区域。
+
+
+8. pose_to_pose_affine(source, target)
+
+   - 计算将 source 管身姿态映射到 target 管身姿态的相似变换；
+   - 同时处理旋转、缩放和平移；
+   - 模板对齐时，用它先把待测管身粗略摆到模板管身的位置和方向。
+
+
+9. clipped_bbox(points, image_shape)
+
+   - 根据多边形点集计算普通外接框；
+   - 将外接框裁剪到图像范围内；
+   - 返回 [x, y, width, height]；
+   - 防止结果坐标出现负值或超过图像边界。
+
+
+六、config.py 中 DetectorConfig 的作用
+--------------------------------------
+
+DetectorConfig 是一个 dataclass，本身没有执行函数，主要用于保存阈值。
+
+主要参数组如下：
+
+1. 预处理和管身定位参数
+
+   - max_working_side：内部处理最大边长，防止大图运算过慢；
+   - canny_low、canny_high：Canny 边缘阈值；
+   - hough_min_length_ratio：Hough 最短线段比例；
+   - pose_width_ratio、pose_length_ratio：定位失败时的默认管宽和管长；
+   - tube_mask_inner_erode_ratio：向内收缩管身掩膜，避开高反光边缘。
+
+2. 模板配准参数
+
+   - ecc_iterations：ECC 最大迭代次数；
+   - ecc_epsilon：ECC 收敛精度；
+   - ecc_max_translation_ratio：ECC 允许的最大平移；
+   - min_alignment_score：ECC 分数过低时改用相位相关。
+
+3. 差分候选参数
+
+   - min_abs_difference：最低灰度差；
+   - robust_sigma_multiplier：稳健阈值的 MAD 倍数；
+   - max_difference_threshold：差分阈值上限；
+   - min_component_area_ratio、max_component_area_ratio：候选面积范围；
+   - morphology_ratio：形态学核相对管宽的大小。
+
+4. datas 工位路由参数
+
+   - profile_blue_area_ratio：识别 01 蓝色管身工位的蓝色占比；
+   - profile_horizontal_angle_deg：识别水平划痕工位的角度阈值；
+   - profile_min_oblique_angle_deg：识别倾斜或竖直工位的最低角度；
+   - profile_narrow_tube_width_ratio：区分 02 窄管和 04 宽管；
+   - profile_bending_curvature_ratio：弯曲判定曲率阈值。
+
+5. 局部检测参数
+
+   - dark_spot_min_saturation、dark_spot_max_hue：棕褐色暗斑 HSV 阈值；
+   - scratch_tophat_threshold：划痕亮顶帽阈值；
+   - inclusion_blackhat_threshold：杂质暗底帽阈值。
+
+6. 通用判据树参数
+
+   后面的 bending_*、dark_spot_*、scratch_*、inclusion_* 参数，分别控制通用
+   模板差分回退流程的四种缺陷分类条件。
+
+7. 输出参数
+
+   - font_scale_ratio：标签字体相对图像尺寸；
+   - line_width_ratio：检测框线宽相对图像尺寸。
+
+
+七、cli.py 中每个函数的作用
+----------------------------
+
+1. build_parser()
+
+   创建 argparse 命令行解析器，定义以下参数：
+
+   - image：单张待检测图片；
+   - --batch：批量输入目录；
+   - --template：良品模板路径；
+   - --output：单张结果图路径；
+   - --output-dir：批量结果目录；
+   - --show：显示结果图；
+   - --json：JSON 输出路径；
+   - --quiet：不打印详细报告。
+
+   image 和 --batch 必须二选一。
+
+
+2. _write_json(path_value, payload)
+
+   - 将结果转成带缩进、保留中文的 JSON；
+   - 自动创建父目录；
+   - 保存 JSON 文件；
+   - 返回最终绝对路径。
+
+
+3. _batch_images(directory_value)
+
+   - 检查批量目录是否存在；
+   - 筛选 BMP、JPG、JPEG、PNG、TIF、TIFF 图片；
+   - 按文件名排序；
+   - 返回图片 Path 列表。
+
+   排序可以使每次批量输出顺序一致，方便比较调参前后的结果。
+
+
+4. _run_batch(args, detector)
+
+   - 获取目录内所有图片；
+   - 复用同一个 detector 对象逐张检测；
+   - 为每张图片生成“文件名_result.jpg”；
+   - 将 image_path 添加到每张结果中；
+   - 单张失败时记录 error，而不是中断整个批次；
+   - 保存 summary.json；
+   - 返回退出码：全部成功为 0，有失败为 1。
+
+
+5. main(argv=None)
+
+   这是命令行主函数，执行顺序是：
+
+   1) 调用 build_parser 解析参数；
+   2) 检查 image 和 --batch 是否正确二选一；
+   3) 检查批量模式是否错误使用了 --output；
+   4) 创建 TubeDefectDetector；
+   5) 批量模式调用 _run_batch；
+   6) 单张模式调用 detector.detect；
+   7) 按需保存 JSON；
+   8) 捕获文件、目录、解码和保存错误；
+   9) 返回 0、1 或 2 作为程序退出状态。
+
+
+八、detector.py 中常量、类和每个函数的作用
+------------------------------------------
+
+1. DEFECT_NAMES
+
+   将英文程序类别映射为中文名称：
+
+   - NORMAL -> 正常；
+   - BENDING -> 弯曲；
+   - DARK_SPOT -> 暗斑；
+   - SCRATCH -> 划痕；
+   - INCLUSION -> 杂质。
+
+
+2. TubeDefectDetector.__init__(template_path, config)
+
+   创建检测器时执行，顺序如下：
+
+   1) 保存配置；
+   2) 解析良品模板路径，默认 datas/01_01.bmp；
+   3) 读取良品原图；
+   4) 将模板限制到工作分辨率；
+   5) 生成预处理灰度图；
+   6) 生成模板差分灰度图；
+   7) 估计模板管身姿态；
+   8) 创建模板管身掩膜；
+   9) 向内收缩掩膜，避开管壁；
+   10) 计算模板中心线曲率。
+
+   这些模板数据只计算一次。批量检测多张图片时复用同一个检测器，可减少重复运算。
+
+
+3. _resolve_template(template_path)
+
+   按顺序尝试：
+
+   - 用户当前运行目录；
+   - Python 包所在目录；
+   - Python 包的父目录。
+
+   找到后返回绝对路径；全部找不到时抛出清晰的 FileNotFoundError。
+
+
+4. _limit_size(image)
+
+   - 检查图片最长边；
+   - 如果不超过 max_working_side，复制原图并返回 scale=1；
+   - 如果太大，则等比例缩小；
+   - 同时返回工作图和“工作图/原图”的比例。
+
+   后面利用这个比例将检测框准确映射回原图坐标。
+
+
+5. _preprocess_gray(image)
+
+   - BGR 转灰度；
+   - 使用 CLAHE 增强局部对比度；
+   - 使用高斯滤波抑制噪声。
+
+   主要用于管身定位、ECC 配准和中心线计算。
+
+
+6. _difference_gray(image)
+
+   - BGR 转灰度；
+   - 轻度高斯模糊；
+   - 不使用 CLAHE。
+
+   差分阶段不用 CLAHE，是因为一个局部缺陷可能改变整个 CLAHE 网格的亮度，
+   造成并不存在的大范围差异。
+
+
+7. _estimate_tube_pose(image)
+
+   这是管身定位的核心函数，主要逻辑如下：
+
+   1) 灰度化并进行较强高斯模糊，抑制背景颗粒；
+   2) Canny 提取边缘；
+   3) HoughLinesP 提取长线段；
+   4) 过滤过短线段；
+   5) 为线段计算角度、长度、中心性和得分；
+   6) 优先寻找方向平行、间距合理、纵向重叠的管壁边缘对；
+   7) 使用 HSV 饱和度帮助选择带色试管区域；
+   8) 沿主轴扩展，估计完整管长；
+   9) 得到中心、角度、长度、宽度和四点多边形；
+   10) 如果平行边匹配失败，则按主方向直方图继续估计；
+   11) 如果完全无法可靠定位，则调用 _fallback_pose。
+
+   之所以优先使用平行边缘对，是因为圆形照明盘也会产生大量长边；只选票数最高的
+   Hough 方向可能把背景圆环误当作试管。
+
+
+8. _fallback_pose(width, height, angle)
+
+   当 Hough 无法可靠定位管身时使用保守回退：
+
+   - 中心取图像中心；
+   - 长度和宽度按配置比例估计；
+   - 角度使用已有估计；
+   - 返回一个默认 TubePose。
+
+   这样定位失败时程序仍能继续，而不是直接崩溃。
+
+
+9. _inner_mask(mask, tube_width)
+
+   - 根据管宽计算腐蚀半径；
+   - 向内收缩管身掩膜；
+   - 排除管壁高反光和边缘配准误差；
+   - 如果腐蚀后全部消失，则返回原掩膜。
+
+
+10. _align_to_template(working_image, input_pose)
+
+    通用回退路径中的模板配准函数：
+
+    1) 将待测图缩放到模板尺寸；
+    2) 将输入 TubePose 同步缩放；
+    3) 用 pose_to_pose_affine 做中心、角度和尺度粗配准；
+    4) warpAffine 得到粗对齐图；
+    5) 使用 ECC 只优化小幅平移；
+    6) ECC 失败或分数过低时使用 phaseCorrelate 相位相关；
+    7) 限制最大平移量，防止算法把真实缺陷“对齐掉”；
+    8) 返回对齐图、输入到模板的变换矩阵和配准分数。
+
+    这里只允许小平移，不允许自由仿射变形，因为自由形变可能把弯曲等真实缺陷消除。
+
+
+11. _normalized_difference(aligned)
+
+    通用回退路径中的差分计算：
+
+    1) 读取对齐图和模板灰度；
+    2) 仅在模板内部掩膜计算；
+    3) 用均值和标准差做稳健曝光归一化；
+    4) 计算像素亮度差；
+    5) 计算 Sobel 梯度幅值差；
+    6) 将亮度差和梯度差加权成 score_map；
+    7) 用中位数和 MAD 自动计算差分阈值；
+    8) 得到二值候选图；
+    9) 使用 OPEN 去噪、CLOSE 连接同一缺陷区域。
+
+    返回归一化灰度图、差分分数图、二值图和实际阈值。
+
+
+12. _extract_candidates(aligned, normalized_gray, score_map, binary)
+
+    将差分二值图转换为 CandidateFeature 列表：
+
+    1) 查找外部轮廓；
+    2) 按面积比例过滤过小噪声和过大区域；
+    3) 为每个轮廓创建填充掩膜；
+    4) 计算最小旋转矩形、长度、宽度、长宽比；
+    5) 计算凸包和实心度；
+    6) 在 Lab 空间计算颜色差和色度差；
+    7) 计算比模板暗多少；
+    8) 计算 Sobel 梯度方向一致性；
+    9) 构造 CandidateFeature。
+
+    梯度方向一致性高的细长区域更像划痕；紧凑、有明显色差的区域更像杂质。
+
+
+13. _centerline_curvature(gray, pose)
+
+    计算管身中心线弯曲程度：
+
+    1) Canny 提取边缘；
+    2) 只保留管身附近区域；
+    3) 将边缘点转换到管身主轴坐标系；
+    4) 沿管长分成多个小区间；
+    5) 每个区间根据两侧边缘估计中心；
+    6) 对中心点拟合二次曲线；
+    7) 迭代排除暗点、划痕造成的离群点；
+    8) 将平滑曲线与最佳直线比较；
+    9) 最大偏离除以管长，得到分辨率无关的曲率比例。
+
+    返回曲率比例和中心线点坐标。
+
+
+14. _tree_bending(curvature)
+
+    通用模板回退路径的弯曲判据树：
+
+    - 比较输入曲率和模板曲率；
+    - 同时要求绝对曲率和相对模板增量超过阈值；
+    - 触发后返回 BENDING、特征值和解释文字；
+    - 不满足返回 None。
+
+
+15. _tree_dark_spot(candidates)
+
+    通用模板回退路径的暗斑判据树：
+
+    - 面积在允许范围；
+    - 比模板明显更暗；
+    - 形状不能过分细长；
+    - 色度变化不能太大；
+    - 多个候选中选择“暗度 × 面积”得分最高者。
+
+
+16. _tree_scratch(candidates)
+
+    通用模板回退路径的划痕判据树：
+
+    - 长宽比足够大；
+    - 长度占管长比例足够大；
+    - 宽度不能过宽；
+    - 梯度方向一致性足够高；
+    - 多个候选中选择形状、方向和差异综合得分最高者。
+
+
+17. _tree_inclusion(candidates)
+
+    通用模板回退路径的杂质判据树：
+
+    - 面积在小型颗粒范围；
+    - Lab 色差明显；
+    - 形状不能过分细长；
+    - 实心度足够高；
+    - 多个候选中选择颜色差、面积和实心度综合得分最高者。
+
+
+18. _axis_aligned_polygon(bbox, image_shape, padding)
+
+    - 将 [x, y, width, height] 扩大一定边距；
+    - 裁剪到图像边界；
+    - 转成四点多边形；
+    - 让只有几像素的缺陷在结果图中更容易观察。
+
+
+19. _normalized_pose_angle(pose)
+
+    - 将无方向的管身角度统一到 0～90°；
+    - 0° 表示水平；
+    - 90° 表示竖直；
+    - 解决 1° 和 179° 实际代表近似同一方向的问题。
+
+
+20. _axis_distance_ratio(point, pose)
+
+    - 计算一个点沿管身主轴到管中心的距离；
+    - 再除以管长进行归一化；
+    - 用于排除靠近管端、背景或远离有效区域的候选。
+
+
+21. _refine_horizontal_pose(image, pose)
+
+    专门修正 03 水平管工位：
+
+    1) 对灰度图做模糊和 Canny；
+    2) 统计每一行的边缘票数；
+    3) 从高票行中寻找间距合理的上下管壁边缘对；
+    4) 综合管宽先验和原始中心位置评分；
+    5) 修正水平管的中心 y 和宽度。
+
+    需要这个函数是因为 Hough 有时会把管内反光线误当成管壁，使划痕落到 ROI 之外。
+
+
+22. _blue_body_polygon(image, pose)
+
+    提取 01 组蓝色弯曲管段：
+
+    1) 转 HSV；
+    2) 根据色相、饱和度和亮度生成蓝色掩膜；
+    3) 统计每一行蓝色像素数量；
+    4) 用连续 9 行平均抑制刻度线干扰；
+    5) 找到透明段进入蓝色实体段的位置；
+    6) 只保留该位置以下的蓝色区域；
+    7) CLOSE 连接小缺口；
+    8) 选择最大轮廓并计算凸包。
+
+    返回的多边形用于在弯曲图片中框出整个弯曲蓝色管段。
+
+
+23. _locate_dark_spot(image, pose)
+
+    针对 02 工位定位暗斑：
+
+    1) 转 HSV；
+    2) 创建并向内收缩管身掩膜；
+    3) 提取低色相、较高饱和度、不过曝的棕褐色像素；
+    4) OPEN 去除孤立噪声；
+    5) 连通域分析；
+    6) 按面积、长宽比和管轴位置过滤；
+    7) 按饱和度和面积评分；
+    8) 计算候选与周围环形区域的亮度差；
+    9) 返回扩边后的框和暗度、饱和度等特征。
+
+    找不到可靠暗斑时返回 None。
+
+
+24. _locate_scratch(image, pose)
+
+    针对 03 工位定位划痕：
+
+    1) 转灰度；
+    2) 进行亮顶帽 MORPH_TOPHAT，突出比邻域亮的小结构；
+    3) 创建并向内收缩管身掩膜；
+    4) 根据顶帽阈值二值化；
+    5) CLOSE 连接同一条 V 形划痕；
+    6) 连通域分析；
+    7) 根据面积、宽高比、尺寸、纵向位置过滤；
+    8) 排除细长的管壁水平反光；
+    9) 根据顶帽对比度、面积和位置评分；
+    10) 返回划痕框和顶帽特征。
+
+    找不到可靠划痕时返回 None。
+
+
+25. _locate_inclusion(image, pose)
+
+    针对 04 工位定位杂质：
+
+    1) 转灰度；
+    2) 进行暗底帽 MORPH_BLACKHAT，突出比邻域暗的小结构；
+    3) 在管身掩膜内阈值化；
+    4) 不做 CLOSE，防止毛丝连接成巨大伪连通域；
+    5) 连通域分析；
+    6) 根据面积、长宽比、最大尺寸和管轴位置过滤；
+    7) 根据暗对比度、面积和中心位置评分；
+    8) 返回黑色颗粒簇的框和底帽特征。
+
+    找不到可靠杂质时返回 None。
+
+
+26. _calibrated_dataset_decision(image, pose, curvature)
+
+    这是当前 datas 数据集主检测路径的分流和决策函数。
+
+    首先计算三个稳定的整体特征：
+
+    - saturated_blue_ratio：蓝色像素占比；
+    - tube_angle_degrees：管身主轴角度；
+    - tube_width_ratio：管宽占图像短边比例。
+
+    然后按以下逻辑选择分支：
+
+    A. 蓝色占比高，且管身接近竖直
+
+       -> 01 工位；
+       -> 调用 _blue_body_polygon；
+       -> 曲率超过阈值：BENDING；
+       -> 曲率未超过：NORMAL。
+
+    B. 管身接近水平
+
+       -> 03 工位；
+       -> 调用 _locate_scratch；
+       -> 找到局部划痕证据：SCRATCH；
+       -> 找不到：NORMAL。
+
+    C. 管身倾斜，并且相对宽度较小
+
+       -> 02 工位；
+       -> 调用 _locate_dark_spot；
+       -> 找到棕褐色局部证据：DARK_SPOT；
+       -> 找不到：NORMAL。
+
+    D. 管身倾斜，并且相对宽度较大
+
+       -> 04 工位；
+       -> 调用 _locate_inclusion；
+       -> 找到黑色颗粒局部证据：INCLUSION；
+       -> 找不到：NORMAL。
+
+    E. 不像任何已标定工位
+
+       -> 返回 None；
+       -> detect() 随后进入通用模板差分回退路径。
+
+    这里不是只根据摆放姿态直接判缺陷。姿态只决定使用哪一种检测器，最终仍必须找到
+    对应的局部图像证据；否则该工位会被判为 NORMAL。
+
+
+27. detect(image_path, save_visualization, show, print_report)
+
+    这是类的公开核心检测函数，也是单张图片的完整执行总控。
+
+    执行顺序：
+
+    1) imread_unicode 读取原图；
+    2) _limit_size 得到工作图和缩放比例；
+    3) _estimate_tube_pose 定位管身；
+    4) _refine_horizontal_pose 修正可能的水平管定位误差；
+    5) _preprocess_gray 生成中心线使用的灰度图；
+    6) _centerline_curvature 计算输入管曲率；
+    7) _calibrated_dataset_decision 尝试当前数据集标定流程。
+
+    如果标定流程成功匹配工位：
+
+    8A) 得到类别、工作图缺陷多边形、特征值和文字说明；
+    9A) 用工作图缩放比例直接将多边形映射回原图；
+    10A) alignment_score 记为 0，因为没有做模板配准。
+
+    如果标定流程返回 None：
+
+    8B) _align_to_template 配准模板；
+    9B) _normalized_difference 生成差分图；
+    10B) _extract_candidates 提取候选；
+    11B) 依次尝试弯曲、暗斑、划痕、杂质判据树；
+    12B) 将模板中的候选框逆变换到工作图，再缩放回原图；
+    13B) 所有判据都不触发则判为 NORMAL。
+
+    两条路径汇合后：
+
+    14) clipped_bbox 得到原图外接框；
+    15) 创建 DiagnosticResult；
+    16) _visualize 绘制结果图；
+    17) 按需调用 imwrite_unicode 保存结果；
+    18) 按需调用 _show 显示结果；
+    19) to_dict 转为字典；
+    20) 按需调用 _print_report 输出终端报告；
+    21) 返回结果字典。
+
+
+28. _visualize(image, defect_type, polygon, values)
+
+    - 复制原图，避免修改调用者的数据；
+    - 正常使用绿色，缺陷使用红色；
+    - 根据原图尺寸自适应线宽；
+    - 绘制缺陷多边形；
+    - 根据类别拼接标签和关键特征值；
+    - 调用 _draw_unicode_label 绘制中文/英文文字。
+
+
+29. _draw_unicode_label(image, text, color_bgr)
+
+    - 优先使用 Pillow 绘制中文；
+    - 依次寻找 Linux、macOS、Windows 常见中文字体；
+    - 在左上角绘制黑色背景和类别文字；
+    - Pillow 或中文字体不可用时，回退到 OpenCV 英文文字；
+    - 返回带标签的 BGR 图片。
+
+
+30. _show(image)
+
+    - 使用 Matplotlib 显示图片；
+    - 将 OpenCV BGR 转为 Matplotlib 使用的 RGB；
+    - 隐藏坐标轴；
+    - 适用于桌面和 Notebook。
+
+
+31. _print_report(image_path, result)
+
+    在终端打印：
+
+    - 输入图片绝对路径；
+    - 中英文诊断类别；
+    - 缺陷外接框；
+    - 位置说明；
+    - 特征描述；
+    - 特征值 JSON；
+    - 模板对齐分数；
+    - 可视化结果路径。
+
+
+32. detect_tube(image_path, ...)
+
+    这是包对外提供的一行式函数。
+
+    执行逻辑：
+
+    - 如果调用者传入自定义 config，则为本次调用新建检测器；
+    - 如果没有自定义 config，则根据模板路径查找缓存；
+    - 缓存不存在时创建 TubeDefectDetector；
+    - 缓存存在时直接复用，避免重复加载模板；
+    - 最后调用 detector.detect 并返回字典。
+
+    _DEFAULT_DETECTORS 保存缓存，_DETECTOR_LOCK 保证多线程情况下创建缓存是安全的。
+
+
+九、单张图片的完整运行顺序
+--------------------------
+
+命令示例：
+
+    python3 cli.py datas/4_01.bmp \
+        --output results/4_01_result.jpg \
+        --json results/4_01_result.json
+
+完整调用链：
+
+cli.py main()
+    ↓
+build_parser() 解析参数
+    ↓
+TubeDefectDetector.__init__() 初始化良品模板
+    ↓
+detector.detect()
+    ↓
+imread_unicode() 读取待测原图
+    ↓
+_limit_size() 生成工作图
+    ↓
+_estimate_tube_pose() 定位管身
+    ↓
+_refine_horizontal_pose() 必要时修正水平管
+    ↓
+_centerline_curvature() 计算中心线曲率
+    ↓
+_calibrated_dataset_decision() 识别工位并选择局部检测器
+    ↓
+04 宽管分支 -> _locate_inclusion()
+    ↓
+得到 INCLUSION、缺陷多边形、位置和特征
+    ↓
+将工作图坐标映射回原图
+    ↓
+DiagnosticResult -> to_dict()
+    ↓
+_visualize() + imwrite_unicode() 保存带框结果
+    ↓
+_print_report() 打印报告
+    ↓
+cli.py _write_json() 保存 JSON
+    ↓
+程序结束，返回退出码 0
+
+
+十、批量检测的完整运行顺序
+--------------------------
+
+命令示例：
+
+    python3 cli.py --batch datas --output-dir results
+
+完整调用链：
+
+cli.py main()
+    ↓
+build_parser() 识别为批量模式
+    ↓
+只创建一次 TubeDefectDetector
+    ↓
+_run_batch()
+    ↓
+_batch_images() 获取并排序 8 张图片
+    ↓
+循环调用同一个 detector.detect()
+    ↓
+每张图片保存 *_result.jpg
+    ↓
+每张结果加入 results 列表
+    ↓
+某张失败：保存 error，继续下一张
+    ↓
+_write_json() 保存 summary.json
+    ↓
+全部成功返回 0；部分失败返回 1
+
+批量模式只初始化一次模板，因此比为每张图片重新创建检测器更高效。
+
+
+十一、五种最终类别的判定逻辑
+----------------------------
+
+本章说明最终输出类别在 OpenCV 层面的实际生成过程。程序内部的合格品代码为
+NORMAL，文档中将其记为 OK；另外四类代码分别为 BENDING、DARK_SPOT、SCRATCH 和
+INCLUSION。
+
+11.0 五类判定共享的姿态、工位和模板差分基础
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+在进入任何类别判定前，程序先把原图缩放成工作图。若原图尺寸为 $W_0\times H_0$，
+内部最长处理边为 1800，则缩放比例为：
+
+    s = min(1, 1800 / max(W_0, H_0))
+
+工作图尺寸约为 $(sW_0, sH_0)$。后续面积、Kernel 和坐标均先在工作图中计算。
+
+（1）管身姿态 TubePose 的提取
+
+姿态定位首先执行 `cv2.cvtColor(BGR2GRAY)`，再用随分辨率变化的高斯核抑制照明盘
+颗粒。核尺寸为：
+
+    k_pose = odd(clip(round(0.012 * min(W,H)), 5, 31))
+
+之后执行：
+
+    cv2.Canny(gray, 35, 110)
+    cv2.HoughLinesP(
+        rho=1,
+        theta=pi/180,
+        threshold=max(30, 0.025*D),
+        minLineLength=max(30, 0.05*D),
+        maxLineGap=max(8, 0.015*D)
+    )
+
+其中 $D=\sqrt{W^2+H^2}$ 为图像对角线。算法不是简单采用票数最高的 Hough 线，
+而是寻找方向误差不大于 8°、法向间距位于 $[0.03S,0.20S]$、纵向重叠率不小于
+0.40 的平行边缘对，其中 $S=min(W,H)$。由最佳边缘对得到：
+
+    TubePose = (center, theta, length=L, width=W_t, polygon)
+
+这里的 `polygon` 是通过 `cv2.boxPoints` 得到的旋转管身矩形。
+
+（2）用于工位分流的三个量
+
+无方向角被归一化到 $[0°,90°]$：
+
+    theta_n = abs(degrees(theta)) mod 180
+    theta_n = 180 - theta_n,  if theta_n > 90
+
+因此 0° 表示水平，90° 表示竖直。管宽比例为：
+
+    r_w = W_t / min(W,H)
+
+蓝色像素集合在 OpenCV HSV 空间中定义为：
+
+    B = {(x,y) | 90 <= H(x,y) <= 150,
+                   S(x,y) >= 100,
+                   V(x,y) >= 35}
+
+蓝色像素占比为：
+
+    r_blue = |B| / (W*H)
+
+主路径按以下优先级分流：
+
+    A. r_blue >= 0.020 AND theta_n >= 50°       -> 01 蓝色管/弯曲分支
+    B. theta_n <= 20°                            -> 03 水平管/划痕分支
+    C. theta_n >= 50° AND r_w <= 0.105           -> 02 倾斜窄管/暗斑分支
+    D. theta_n >= 50° AND r_w > 0.105            -> 04 倾斜宽管/杂质分支
+    E. 以上均不满足                              -> 通用模板差分兜底路径
+
+分流条件只决定“调用哪个缺陷算子”，不直接等于缺陷类别。除弯曲分支使用中心线曲率
+外，其余分支必须实际提取到满足面积、形状、位置和响应强度条件的连通域，否则输出
+OK/NORMAL。
+
+（3）通用模板差分兜底路径的共享处理
+
+未知工位会与 `datas/01_01.bmp` 良品模板对齐。先根据两个 TubePose 进行旋转、缩放和
+平移粗配准，再使用 `cv2.findTransformECC(..., cv2.MOTION_TRANSLATION)` 进行仅平移的
+细配准：最大迭代次数 120，收敛精度 $10^{-5}$。若 ECC 分数小于 0.05，则改用
+`cv2.phaseCorrelate`。最终平移限制在 $\pm0.08W_t$，防止自由配准把真实缺陷抹掉。
+
+对齐后的灰度 $I_a$ 按模板灰度 $I_t$ 的均值和标准差做曝光归一化：
+
+    I_n = (I_a - mu_a) * clip(sigma_t/sigma_a, 0.75, 1.35) + mu_t
+
+再分别计算亮度差和 3×3 Sobel 梯度幅值差：
+
+    D_I = |I_t - I_n|
+    D_G = ||grad(I_t)| - |grad(I_n)||
+    Score = 0.72*D_I + 0.28*min(D_G, 100)
+
+自适应差分阈值使用中位数和绝对中位差 MAD：
+
+    MAD = median(|Score - median(Score)|) + 1
+    T_diff = clip(
+        max(13, median(Score) + 5*1.4826*MAD),
+        13,
+        55
+    )
+
+二值差分图为 `Score >= T_diff`。之后用椭圆结构元素执行 OPEN 和两次 CLOSE，核半径
+为 `round(0.012*模板管宽)`。`cv2.findContours(RETR_EXTERNAL,
+CHAIN_APPROX_SIMPLE)` 将其转成 CandidateFeature 候选。候选公共面积范围为管身面积的
+$[0.00012,0.22]$。各类别的兜底判据再从这些候选中筛选。
+
+
+11.1 合格品 OK 判定逻辑与底层实现
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. 前置触发条件与工位分流
+
+OK 不是一个独立的图像算子，而是“工位已识别，但相应缺陷证据不存在”或“所有兜底
+判据树均未触发”的最终状态。具体有五条互斥路径：
+
+    01 工位：r_blue >= 0.020 AND theta_n >= 50°，且 curvature_ratio < 0.0050；
+    03 工位：theta_n <= 20°，且 _locate_scratch() 没有合格连通域；
+    02 工位：theta_n >= 50° AND r_w <= 0.105，且 _locate_dark_spot() 返回 None；
+    04 工位：theta_n >= 50° AND r_w > 0.105，且 _locate_inclusion() 返回 None；
+    兜底路径：弯曲、暗斑、划痕、杂质四棵判据树均返回 None。
+
+2. 核心图像处理算子与提取方法（重点）
+
+OK 会实际运行所属工位的完整缺陷检测算子，而不是跳过检测。例如水平管仍会执行
+灰度顶帽、阈值化、CLOSE 和连通域分析；只有所有连通域均未通过划痕面积、形状、
+位置等约束时才输出 OK。倾斜窄管和倾斜宽管同理。
+
+01 工位的 OK 依赖中心线计算。输入图先执行：
+
+    cv2.cvtColor(BGR2GRAY)
+    CLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    cv2.GaussianBlur(kernel=(5,5), sigma=0.9)
+    cv2.Canny(low=35, high=110)
+
+中心线的详细二次曲线拟合和 MAD 剔除过程见 11.2。若无法得到至少 9 个有效中心切片，
+`_centerline_curvature` 返回 0，因此当前实现会落入 OK。工程部署时应把“定位/中心线
+证据不足”单独作为 UNKNOWN 或检测失败处理；当前五分类接口没有独立 UNKNOWN 类。
+
+兜底路径中的 OK 则由共享模板差分处理生成候选，依次调用：
+
+    _tree_bending -> _tree_dark_spot -> _tree_scratch -> _tree_inclusion
+
+四者都返回 None 时才为 OK。这里是 AND 的否定链：
+
+    OK = NOT Bending AND NOT DarkSpot AND NOT Scratch AND NOT Inclusion
+
+3. 缺陷判定决策树（Decision Rules & Thresholds）
+
+OK 的具体反向条件为：
+
+    01：curvature_ratio < 0.0050；
+    03：不存在同时满足 11.4 全部条件的顶帽连通域；
+    02：不存在同时满足 11.3 全部条件的 HSV 棕褐色连通域；
+    04：不存在同时满足 11.5 全部条件的暗底帽连通域；
+    兜底：四类 CandidateFeature 判据全部失败。
+
+必须注意：OK 仅表示在当前标定阈值下未找到四类缺陷证据，不等于对所有未知缺陷的
+绝对保证。
+
+4. 缺陷框（Bounding Box）生成与坐标映射机制
+
+OK 没有红色缺陷框，而是用绿色框表示已检查的管身 ROI：
+
+    01 工位：使用 `_blue_body_polygon` 返回的蓝色主体凸包；
+    02/03/04 工位：使用 TubePose.polygon 旋转管身矩形；
+    兜底路径：将模板管身 polygon 反变换回输入原图。
+
+主路径工作坐标到原图坐标的映射为：
+
+    [x_0, y_0]^T = [[1/s, 0], [0, 1/s]] * [x_w, y_w]^T
+
+转换后的多边形用 `cv2.boundingRect(round(points))` 得到 $(x,y,w,h)$，再裁剪到
+$[0,W_0)\times[0,H_0)$。
+
+
+11.2 弯曲 Bending 判定逻辑与底层实现
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. 前置触发条件与工位分流
+
+主路径弯曲检测只在 01 蓝色管工位触发：
+
+    r_blue >= 0.020 AND theta_n >= 50°
+
+当前样本的管件近似竖直，蓝色面积明显高于另外三个工位。分流后先计算中心线曲率，
+只有曲率达到 0.5% 才输出 BENDING。
+
+未知工位进入兜底路径后仍可触发弯曲树，但需要同时满足“绝对曲率”和“相对良品增量”
+两个条件，详见第 3 小节。
+
+2. 核心图像处理算子与提取方法（重点）
+
+（1）边缘提取和管轴坐标变换
+
+预处理灰度图经过 `cv2.Canny(35,110)`。为了减少背景圆环干扰，算法构造宽度为
+$1.7W_t$ 的扩展管身旋转矩形，只保留矩形内的边缘点 $(x_i,y_i)$。
+
+定义管身主方向和法方向：
+
+    d = [cos(theta), sin(theta)]^T
+    q = [-sin(theta), cos(theta)]^T
+
+以 TubePose 中心 $c$ 为原点，每个边缘点转换为管轴坐标：
+
+    t_i = (p_i-c)^T d        # 沿管长方向
+    n_i = (p_i-c)^T q        # 沿管宽法向
+
+只保留：
+
+    |t_i| <= 0.48L AND |n_i| <= 0.85W_t
+
+（2）切片中心提取
+
+在 $[-0.47L,0.47L]$ 上设置 25 个分割点，形成 24 个纵向切片。每个切片至少需要
+5 个法向边缘值。为降低反光毛丝和内部刻度线影响，不直接取最小/最大边缘，而取：
+
+    n_low  = percentile(n, 12)
+    n_high = percentile(n, 88)
+    n_center = (n_low + n_high) / 2
+
+得到中心样本 $(t_j,n_j)$。有效切片少于 9 个时曲率返回 0。
+
+（3）二次曲线拟合与 MAD 离群点剔除
+
+对中心样本用 `np.polyfit(..., degree=2)` 拟合：
+
+    n_hat(t) = a*t^2 + b*t + c
+
+最多执行 3 轮稳健重拟合。第 k 轮残差为：
+
+    e_j = n_j - n_hat(t_j)
+    m = median(e_j)
+    MAD = median(|e_j-m|) + 0.5
+
+保留条件为：
+
+    |e_j-m| <= max(1.5, 3*1.4826*MAD)
+
+其中 1.4826 将正态分布下的 MAD 换算为标准差量级；至少保留 6 个点，否则停止更新。
+这样局部暗斑或划痕造成的少数离群切片不会被误当成整管弯曲。
+
+（4）最大偏离率
+
+在有效 $t$ 范围内均匀采样 80 个点，先计算二次平滑曲线 $n_hat(t)$，再对该平滑曲线
+拟合最佳直线：
+
+    n_line(t) = alpha*t + beta
+
+最大几何偏离和归一化曲率指标为：
+
+    d_max = max_t |n_hat(t) - n_line(t)|
+    curvature_ratio = d_max / L
+
+这里并非严格微分几何曲率 $\kappa=|n''|/(1+n'^2)^{3/2}$，而是“中心线相对最佳直线
+的最大弓高/管长”。它具有直观、抗尺度变化和便于设定质量阈值的优点。
+
+3. 缺陷判定决策树（Decision Rules & Thresholds）
+
+主路径为一个严格 AND 链：
+
+    r_blue >= 0.020
+    AND theta_n >= 50°
+    AND curvature_ratio >= 0.0050
+    -> BENDING
+
+`0.0050` 即最大弓高达到管长的 0.5%。否则 01 工位输出 OK。
+
+兜底模板树要求：
+
+    curvature_excess = curvature_ratio - template_curvature_ratio
+
+    curvature_excess >= 0.0075
+    AND curvature_ratio >= 0.010
+    -> BENDING
+
+即输入比良品至少多弯 0.75%，且自身绝对偏离至少为 1.0%。
+
+4. 缺陷框（Bounding Box）生成与坐标映射机制
+
+（1）为什么锚定在直段与弯段交界处
+
+曲率指标 $d_max/L$ 负责回答“是否弯曲”，但当前主路径不使用 $d_max$ 对应的单个采样
+点直接画框。原因是弯曲属于从拐点开始持续到管端的分布式几何缺陷；只框最大偏离点
+会漏掉完整弯段。因此 `_blue_body_polygon` 另外使用横向切片宽度定位直弯交界。
+
+先在 HSV 中建立蓝色掩膜：
+
+    90 <= H <= 150 AND S >= 100 AND V >= 35
+
+对图像每一行 y 计算蓝色像素数量：
+
+    C(y) = count_x(blue(x,y)=1)
+
+使用长度为 9 的一维均值窗口抑制单根刻度线：
+
+    C_s(y) = (1/9) * sum_{k=-4}^{4} C(y+k)
+
+透明直段只包含一条细蓝色中心线，$C_s(y)$ 较小；进入蓝色实体弯段后，蓝色区域在
+横向突然扩展到接近管宽。第一个满足下式的切片被视为直弯交界锚点：
+
+    y_turn = first{y | C_s(y) >= 0.55W_t} - 4
+
+减 4 是对 9 行居中窗口的半宽补偿，使锚点回到宽度突变开始处。程序将
+$y<y_turn$ 的蓝色像素清零，所以最终红框的上边界由该拐点切片锚定。
+
+这是一种“颜色截面宽度突变 + 几何曲率确认”的联合推导：曲率确认缺陷存在，切片宽度
+突变确定弯段从哪里开始。它适用于当前 01 工位近似竖直且直弯交界伴随蓝色实体宽度
+突变的结构；若未来管件没有颜色变化，应改为从中心线局部斜率或二阶差分定位拐点。
+
+（2）从交界锚点生成完整弯段框
+
+保留 $y>=y_turn$ 的蓝色掩膜后，使用椭圆 CLOSE 连接反光造成的小孔洞：
+
+    k = odd(max(3, round(0.06W_t)))
+    mask = morphologyEx(mask, MORPH_CLOSE, ellipse(k,k))
+
+随后：
+
+    findContours(RETR_EXTERNAL, CHAIN_APPROX_SIMPLE)
+    largest = max(contours, contourArea)
+    polygon = convexHull(largest)
+
+所以红色轮廓的上边界锚定在直弯交界切片，主体则覆盖从交界到管端的整个弯曲蓝色
+区域。若未找到蓝色轮廓，则回退为 TubePose.polygon。
+
+（3）坐标映射
+
+主路径凸包位于工作图坐标，逐点执行 $(x_0,y_0)=(x_w/s,y_w/s)$ 回原图，再通过
+`cv2.boundingRect` 得到 JSON 中的 $(x,y,w,h)$。兜底路径没有局部候选框，使用模板
+管身 polygon，经 `inverse(input_to_template)` 和 $1/s$ 缩放映射回原图。
+
+
+11.3 暗斑 Dark Spot 判定逻辑与底层实现
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. 前置触发条件与工位分流
+
+主路径在以下条件下进入 02 倾斜窄管暗斑分支：
+
+    NOT (r_blue >= 0.020 AND theta_n >= 50°)
+    AND theta_n >= 50°
+    AND r_w <= 0.105
+
+第一项表示蓝色管弯曲分支具有更高优先级。若姿态不属于已标定工位，则通用模板路径
+仍可能根据“局部变暗且色度变化小”的 CandidateFeature 判为暗斑。
+
+2. 核心图像处理算子与提取方法（重点）
+
+（1）HSV 棕褐色区域提取
+
+输入 BGR 工作图通过 `cv2.cvtColor(..., COLOR_BGR2HSV)` 转换。TubePose.polygon 被填充
+为管身掩膜，再用椭圆结构元素向内腐蚀：
+
+    r_e = max(1, round(0.12W_t))
+    K_e = ellipse(2r_e+1, 2r_e+1)
+    M_inner = erode(M_tube, K_e)
+
+腐蚀是为了去掉管壁反光、外部背景和边缘定位误差。暗斑初始二值条件为：
+
+    H <= 35
+    AND S >= 35
+    AND V <= 225
+    AND M_inner > 0
+
+OpenCV 的 H 范围为 0～179。低 H、高于透明管的饱和度和非过曝 V 共同描述当前样本中
+的棕褐色斑点。二值图随后用 3×3 全 1 矩形 Kernel 执行 MORPH_OPEN，即先腐蚀再
+膨胀，以去掉孤立色噪点：
+
+    M_open = open(M, ones(3,3))
+
+（2）连通域特征
+
+`cv2.connectedComponentsWithStats` 为每个连通域提供：
+
+    stats = (x, y, width, height, area)
+    centroid = (cx, cy)
+
+形状长宽比定义为：
+
+    aspect = max(width,height) / min(width,height)
+
+候选质心沿管轴的归一化距离为：
+
+    rho_axis = |(centroid-center)^T d| / L
+
+通过硬条件后，使用平均 HSV 饱和度和面积评分：
+
+    Score_dark = mean(S_component) * sqrt(area)
+
+选择得分最高的棕褐色连通域。
+
+（3）局部灰度差 Delta G
+
+选中连通域后，将其掩膜用 11×11 全 1 Kernel 膨胀，并减去连通域本身，得到邻域环：
+
+    Ring = dilate(Component, ones(11,11)) - Component
+    Ring = Ring AND M_inner
+
+灰度均值差为：
+
+    Delta G = mean(G_Ring) - mean(G_Component)
+
+$\Delta G>0$ 表示斑点比周围暗。当前代码将 `local_darkness=Delta G` 写入特征和报告，
+但主路径没有再用一个单独的 $\Delta G$ 阈值二次否决；真正的硬触发来自 HSV、面积、
+形状和位置条件。文档必须区分“报告指标”和“决策硬阈值”。
+
+兜底路径则使用模板差分候选。候选暗度计算为：
+
+    mean_darkness = mean(I_template - I_normalized_input)
+
+色度差在 Lab 的 a、b 两通道上计算：
+
+    chroma_delta = mean(sqrt((Delta a)^2 + (Delta b)^2))
+
+3. 缺陷判定决策树（Decision Rules & Thresholds）
+
+主路径必须存在至少一个连通域同时满足：
+
+    area >= max(8, 0.003W_t^2)
+    AND area <= 0.15W_t^2
+    AND aspect <= 4.0
+    AND rho_axis <= 0.46
+    AND HSV 像素条件 H<=35, S>=35, V<=225
+
+多个候选取 `mean_saturation*sqrt(area)` 最大者。存在合格候选即 DARK_SPOT；不存在则
+该 02 工位输出 OK。
+
+兜底判据要求 CandidateFeature 同时满足：
+
+    0.0012 <= area_ratio <= 0.12
+    AND mean_darkness >= 14
+    AND aspect <= 6.0
+    AND chroma_delta <= 20
+
+多个候选按 `mean_darkness*sqrt(area_px)` 取最大者。
+
+4. 缺陷框（Bounding Box）生成与坐标映射机制
+
+ROI 锚点就是最佳 HSV 连通域的 `connectedComponentsWithStats` 外接矩形
+$(x_c,y_c,w_c,h_c)$。为了让小斑点在结果图中可见，在工作图加入：
+
+    padding = max(5, round(0.12W_t))
+
+得到四点轴对齐 polygon，并裁剪到工作图边界。随后所有点除以 $s$ 回到原图，最后
+由 `clipped_bbox` 输出原图 $(x,y,w,h)$。兜底路径使用 `cv2.minAreaRect` 对差分轮廓
+生成旋转矩形，再通过模板逆仿射矩阵映射到原图。
+
+
+11.4 划痕 Scratch 判定逻辑与底层实现
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. 前置触发条件与工位分流
+
+主路径在归一化管轴角满足下式时进入 03 水平管划痕分支：
+
+    theta_n <= 20°
+
+在局部检测之前，如果初始姿态角不超过 8°，程序还会调用 `_refine_horizontal_pose`。
+它对 9×9 高斯模糊灰度图执行 `Canny(35,110)`，统计图像中央 15%～85% 横向范围内
+每一行的边缘票数，从票数最高的 100 行中寻找上下管壁对。边缘间距要求：
+
+    0.08S <= gap <= 0.18S,  expected_gap = 0.13S
+
+边缘对中点与原中心的差不超过 $0.12H$。评分包含 gap 高斯先验和 center 高斯先验，
+最终用最佳上下边缘修正管中心 y 和管宽 $W_t$，避免内部反光线被误当成管壁。
+
+2. 核心图像处理算子与提取方法（重点）
+
+（1）亮顶帽 Top-Hat
+
+划痕在当前 03 样本中是比局部管身背景更亮的 V 形结构，因此使用白顶帽：
+
+    TopHat(I,K) = I - Open(I,K)
+    Open(I,K) = Dilate(Erode(I,K),K)
+
+其中 $I$ 为 `cv2.cvtColor(BGR2GRAY)` 得到的灰度图。结构元素为椭圆：
+
+    k_top = odd(max(9, round(0.20W_t)))
+    K_top = ellipse(k_top, k_top)
+
+开运算会移除尺寸小于 Kernel 的亮结构，再用原图减开运算结果，便突出局部亮划痕；
+缓慢亮度变化和大面积管身背景大多被消除。
+
+管身 polygon 填充后用椭圆核向内腐蚀：
+
+    r_e = max(1, round(0.16W_t))
+    M_inner = erode(M_tube, ellipse(2r_e+1, 2r_e+1))
+
+顶帽响应二值化：
+
+    M_scratch = (TopHat >= 20) AND M_inner
+
+然后使用方形全 1 Kernel 执行 CLOSE：
+
+    k_close = odd(max(3, round(0.03W_t)))
+    M_scratch = close(M_scratch, ones(k_close,k_close))
+
+CLOSE 是先膨胀后腐蚀，用于连接 V 形划痕中被反光切断的小间隙。
+
+（2）连通域形状、位置和评分
+
+`connectedComponentsWithStats` 产生 $(x,y,w,h,area)$ 和 centroid。当前 V 形划痕不是
+无限细直线，因此外接框需要“相对紧凑”，其宽高比定义为：
+
+    box_ratio = w / h
+
+对通过硬条件的候选，顶帽平均响应为：
+
+    C_top = mean(TopHat(p)), p in component
+
+综合评分：
+
+    Score_scratch = C_top * sqrt(area) * exp(-2*rho_axis)
+
+指数项使管身中段候选优先，但位置只参与同类候选排序，不能单独触发划痕。
+
+（3）与杂质 Black-Hat 的根本区别
+
+Top-Hat 计算 `原灰度 - 开运算结果`，响应对象是“比邻域更亮的小结构”；Black-Hat
+计算 `闭运算结果 - 原灰度`，响应对象是“比邻域更暗的小结构”。因此当前亮 V 形划痕
+使用 Top-Hat，而黑色杂质颗粒使用 11.5 的 Black-Hat，二者不能互换。
+
+兜底路径还使用 3×3 Sobel 梯度方向一致性。对候选每个像素：
+
+    phi_i = atan2(G_y, G_x)
+    m_i = sqrt(G_x^2 + G_y^2)
+
+因为梯度方向 $\phi$ 与 $\phi+\pi$ 表示同一条无方向直线，使用二倍角：
+
+    coherence = sqrt(
+        (sum m_i*cos(2phi_i))^2 +
+        (sum m_i*sin(2phi_i))^2
+    ) / sum(m_i)
+
+coherence 越接近 1，表示候选梯度方向越一致，越像线状划痕。
+
+3. 缺陷判定决策树（Decision Rules & Thresholds）
+
+主路径必须有连通域同时满足：
+
+    theta_n <= 20°
+    AND TopHat >= scratch_tophat_threshold = 20
+    AND area >= max(30, 0.004W_t^2)
+    AND area <= 0.25W_t^2
+    AND 0.5 <= w/h <= 3.0
+    AND max(w,h) <= 1.4W_t
+    AND h >= 0.15W_t
+    AND rho_axis <= 0.40
+
+多个合格候选选择 `C_top*sqrt(area)*exp(-2*rho_axis)` 最大者。找到则为 SCRATCH，
+否则该水平工位为 OK。
+
+兜底判据必须同时满足：
+
+    aspect >= 4.0
+    AND length_px/template_length >= 0.075
+    AND width_px/template_width <= 0.30
+    AND gradient_coherence >= 0.26
+
+多个兜底候选按 `aspect*gradient_coherence*mean_difference` 选最大者。主路径针对当前
+V 形划痕使用相对紧凑的 box_ratio；兜底路径面向一般长线划痕，要求 aspect>=4，
+两者针对的划痕形态不同，不应混为同一个阈值集合。
+
+4. 缺陷框（Bounding Box）生成与坐标映射机制
+
+红框锚定在最佳顶帽连通域的 `connectedComponentsWithStats` 外接矩形。工作图扩边：
+
+    padding = max(4, round(0.05W_t))
+
+扩边后的轴对齐四点 polygon 先裁剪到工作图，再逐点除以 $s$ 映射回原图，最后由
+`cv2.boundingRect` 生成 JSON 中的 $(x,y,w,h)$。兜底路径使用差分轮廓的
+`cv2.minAreaRect + cv2.boxPoints`，因此可得到随划痕方向旋转的框，再通过模板逆变换
+回原图。
+
+
+11.5 杂质 Inclusion 判定逻辑与底层实现
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. 前置触发条件与工位分流
+
+主路径在以下条件下进入 04 倾斜宽管杂质分支：
+
+    NOT (r_blue >= 0.020 AND theta_n >= 50°)
+    AND theta_n >= 50°
+    AND r_w > 0.105
+
+相对管宽大于 0.105 用来与 02 暗斑窄管工位区分。未知工位进入兜底后，则不依赖这个
+工位宽度条件，而是通过差分色差、面积和实心度识别杂质。
+
+2. 核心图像处理算子与提取方法（重点）
+
+（1）暗底帽 Black-Hat
+
+杂质在当前 04 样本中表现为比局部透明管背景更暗的黑色颗粒簇，因此使用黑帽/底帽：
+
+    BlackHat(I,K) = Close(I,K) - I
+    Close(I,K) = Erode(Dilate(I,K),K)
+
+灰度图来自 `cv2.cvtColor(BGR2GRAY)`。结构元素为椭圆：
+
+    k_black = odd(max(9, round(0.13W_t)))
+    K_black = ellipse(k_black, k_black)
+
+闭运算会填平尺寸小于 Kernel 的暗孔洞，再减去原图，使局部暗颗粒产生正响应。二值
+条件为：
+
+    M_inclusion = (BlackHat >= 30) AND M_tube
+
+这里使用完整 TubePose.polygon 掩膜，没有像暗斑/划痕分支那样先腐蚀。
+
+（2）为什么 Black-Hat 后故意不做 CLOSE
+
+管件表面存在大量毛丝和细反光边界。若对二值 Black-Hat 响应执行 CLOSE，邻近细线会
+被膨胀连接成一个大连通域，真实小颗粒反而会被吞并。因此代码直接调用
+`connectedComponentsWithStats`，保持颗粒响应之间的分离性。这与划痕分支恰好不同：
+划痕需要 CLOSE 连接同一 V 形亮痕，杂质需要避免 CLOSE 连接无关暗线。
+
+（3）连通域特征与中心先验
+
+对每个连通域计算：
+
+    aspect = max(w,h)/min(w,h)
+    rho_axis = |(centroid-center)^T d|/L
+    C_black = mean(BlackHat(p)), p in component
+
+候选综合评分为：
+
+    Score_inclusion = C_black * sqrt(area) * exp(-6*rho_axis)
+
+相较划痕的 `exp(-2*rho_axis)`，杂质使用更强的中心先验 `exp(-6*rho_axis)`，这是因为
+当前 04 工位标定样本中的杂质颗粒簇位于管身中段。该先验只用于候选排序，候选仍必须
+先通过面积、形状、尺寸和位置硬约束。
+
+兜底路径在 Lab 颜色空间计算：
+
+    DeltaLab_i = sqrt((Delta L_i)^2 + (Delta a_i)^2 + (Delta b_i)^2)
+    color_delta = mean(DeltaLab_i)
+
+并计算轮廓实心度：
+
+    solidity = contour_area / convex_hull_area
+
+紧凑颗粒通常比细线毛丝具有更高实心度。
+
+3. 缺陷判定决策树（Decision Rules & Thresholds）
+
+主路径要求存在连通域同时满足：
+
+    theta_n >= 50°
+    AND r_w > 0.105
+    AND BlackHat >= inclusion_blackhat_threshold = 30
+    AND area >= max(10, 0.0006W_t^2)
+    AND area <= 0.08W_t^2
+    AND aspect <= 3.0
+    AND max(w,h) <= 0.35W_t
+    AND rho_axis <= 0.42
+
+多个候选选择 `C_black*sqrt(area)*exp(-6*rho_axis)` 最大者。找到则输出 INCLUSION，
+否则 04 工位输出 OK。
+
+兜底判据要求 CandidateFeature 同时满足：
+
+    0.00015 <= area_ratio <= 0.035
+    AND color_delta >= 18
+    AND aspect <= 4.8
+    AND solidity >= 0.22
+
+多个候选按 `color_delta*sqrt(area_px)*solidity` 取最大者。
+
+4. 缺陷框（Bounding Box）生成与坐标映射机制
+
+红框锚定在最高分 Black-Hat 连通域的外接矩形 $(x_c,y_c,w_c,h_c)$，工作图扩边：
+
+    padding = max(6, round(0.10W_t))
+
+扩边使颗粒簇周围保留少量上下文。四点 polygon 裁剪到工作图后，以 $1/s$ 缩放回原图，
+再转换为最终 $(x,y,w,h)$。兜底路径使用差分轮廓的最小旋转矩形；映射链为：
+
+    template candidate polygon
+        --inverse(input_to_template)--> working-image polygon
+        --scale(1/s)------------------> original-image polygon
+        --clipped_bbox----------------> (x,y,w,h)
+
+至此，Top-Hat 与 Black-Hat 的职责边界是明确的：Top-Hat 定位相对局部背景更亮的
+V 形划痕，Black-Hat 定位相对局部背景更暗的紧凑杂质颗粒。
+
+
+十二、程序中的坐标系统
+----------------------
+
+程序同时使用三个坐标系统：
+
+1. 原图坐标
+
+   用户输入 BMP/JPG/PNG 的实际像素坐标。最终 location_bbox 必须使用这个坐标。
+
+2. 工作图坐标
+
+   为提高速度，大图最长边被缩小到 max_working_side。当前大部分检测算法在这里执行。
+
+3. 模板坐标
+
+   只有通用模板差分回退流程使用。输入工作图先配准到良品模板，再在模板坐标中找缺陷。
+
+标定路径坐标转换：
+
+    工作图缺陷框 ÷ working_scale = 原图缺陷框
+
+模板回退路径坐标转换：
+
+    模板缺陷框
+        -> 逆配准到输入工作图
+        -> 按 working_scale 放大到原图
+
+最终再由 clipped_bbox 保证坐标不会超出原图。
+
+
+十三、输入和输出数据格式
+------------------------
+
+1. 输入
+
+   支持：BMP、JPG、JPEG、PNG、TIF、TIFF。
+
+2. 输出字典/JSON 的主要字段
+
+   defect_type
+       英文类别代码，例如 INCLUSION。
+
+   defect_type_cn
+       中文类别，例如“杂质”。
+
+   location_bbox
+       原图像素坐标 [x, y, width, height]。
+
+   location_description
+       例如“倾斜宽管中部的黑色颗粒聚集区”。
+
+   feature_description
+       例如“暗底帽对比度为 44.8 灰度级，区域紧凑且呈黑色颗粒簇”。
+
+   feature_values
+       实际参与解释的角度、管宽比例、曲率、顶帽/底帽对比度等数值。
+
+   alignment_score
+       模板对齐分数。当前 datas 标定路径不进行模板对齐，所以值为 0。
+
+   visualization_path
+       带框结果图片的绝对路径；未保存图片时不存在这个字段。
+
+
+十四、当前项目的限制
+--------------------
+
+1. 当前只有 8 张原始图片，样本数量非常少；
+2. 四类缺陷来自四种明显不同的拍摄工位；
+3. 当前阈值针对现有相机、背景、光源、分辨率和摆放方式标定；
+4. 新图片应尽量保持相同拍摄条件；
+5. 如果产品、相机、角度或光源变化，需要重新采集正常和缺陷数据；
+6. 正式使用前应将数据分成训练集、验证集和独立测试集；
+7. 当前结果只能视为可解释的传统视觉基线，不能直接作为量产质量标准。
+
+
+十五、最常用的两个命令
+----------------------
+
+1. 检测全部 datas 图片：
+
+    python3 cli.py --batch datas --output-dir results
+
+2. 检测一张额外图片：
+
+    python3 cli.py path/to/new_image.bmp \
+        --output results/new_image_result.jpg \
+        --json results/new_image_result.json

@@ -1,0 +1,74 @@
+试管四类缺陷检测（OpenCV）
+==========================
+
+一、当前样本结论
+----------------
+
+datas/01_01.bmp：正常（项目的无缺陷参考图）
+datas/01_02.bmp：弯曲
+datas/02_01.bmp：暗斑
+datas/02_02.bmp：暗斑
+datas/3_01.bmp ：划痕
+datas/3_02.bmp ：划痕
+datas/4_01.bmp ：杂质
+datas/4_02.bmp ：杂质
+
+
+二、直接运行
+------------
+
+依赖：Python 3、opencv-python、numpy。Pillow 是可选依赖，安装后结果图能显示中文。
+
+1. 批量检测 datas 中的 8 张图片：
+
+   python3 cli.py --batch datas --output-dir results
+
+   程序会生成：
+   - results/*_result.jpg：红框缺陷图；良品用绿框表示管身。
+   - results/summary.json：每张图的类别、坐标、位置说明和特征值。
+
+2. 输入任意一张额外图片：
+
+   python3 cli.py path/to/new_image.bmp \
+       --output results/new_image_result.jpg \
+       --json results/new_image_result.json
+
+   location_bbox 的格式是 [x, y, width, height]，坐标对应输入原图，而不是缩略图。
+
+3. 在 Python 代码中调用：
+
+   from tube_inspection import detect_tube
+
+   result = detect_tube(
+       "path/to/new_image.bmp",
+       save_visualization="results/new_image_result.jpg",
+   )
+   print(result["defect_type_cn"])
+   print(result["location_bbox"])
+   print(result["location_description"])
+   print(result["feature_description"])
+
+   如果使用这段导入代码，请在 tube_inspection 的父目录运行 Python。
+
+
+三、算法思路
+------------
+
+1. 用 Canny、概率 Hough 直线和平行边几何估计管身中心、角度、长度与宽度。
+2. 根据当前四个采集工位中稳定的管身角度、相对宽度和蓝色面积，选择相应检测分支。
+3. 每个分支仍须找到局部缺陷证据，不能只凭工位外观直接判为缺陷：
+   - 弯曲：中心线相对最佳直线的最大偏离率。
+   - 暗斑：HSV 中棕褐色、比邻域更暗的紧凑连通域。
+   - 划痕：亮顶帽突出局部 V 形亮痕，并排除长条管壁反光。
+   - 杂质：暗底帽突出黑色颗粒簇，并用面积、形状和位置筛除毛丝/反光。
+4. 未匹配当前四个工位的图片，会回退到原来的良品模板对齐和差分判据树。
+
+
+四、使用边界
+------------
+
+当前只有 8 张图片，程序是在这批固定相机、光源和产品工位上标定的传统视觉基线，
+不是已经证明能适用于所有现场图片的通用模型。新增图片应尽量保持相同分辨率、光照、
+背景和管件摆放方式。若相机或产品变化，应采集包含正常/四类缺陷的独立训练集与测试集，
+再调整 config.py 中的 profile_*、scratch_tophat_threshold、
+inclusion_blackhat_threshold 等阈值；不要直接把当前阈值当作量产质量验收标准。
