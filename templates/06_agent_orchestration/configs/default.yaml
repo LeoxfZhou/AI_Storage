@@ -1,0 +1,12 @@
+agents:
+  model: gpt-5.4-mini
+  max_turns: 6
+  max_output_tokens: 1000
+guardrail:
+  max_input_characters: 12000
+tracing:
+  workflow_name: support_agent_template
+prompts:
+  triage: prompts/triage.md
+  billing: prompts/billing.md
+  technical: prompts/technical.md

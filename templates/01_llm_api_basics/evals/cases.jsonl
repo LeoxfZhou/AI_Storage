@@ -1,0 +1,2 @@
+{"id":"basic-001","input":"用一句话解释 RAG","must_contain":["检索","生成"]}
+{"id":"basic-002","input":"列出两个 API 超时的排查方向","must_contain":["网络","超时"]}

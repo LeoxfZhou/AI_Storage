@@ -1,0 +1,4 @@
+model:
+  max_output_tokens: 350
+memory:
+  max_local_turns: 8

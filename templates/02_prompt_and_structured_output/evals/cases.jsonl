@@ -1,0 +1,2 @@
+{"id":"ticket-001","input":"昨天扣了两次会员费，请退回一次","expected":{"category":"billing","priority":"normal","contains_sensitive_data":false}}
+{"id":"ticket-002","input":"生产账号无法登录，今天发布被阻塞","expected":{"category":"account","priority":"urgent","contains_sensitive_data":false}}

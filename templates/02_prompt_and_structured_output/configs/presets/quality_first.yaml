@@ -1,0 +1,4 @@
+model:
+  max_output_tokens: 1000
+input:
+  max_characters: 20000

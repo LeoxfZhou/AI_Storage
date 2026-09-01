@@ -1,0 +1,9 @@
+model:
+  # CUSTOMIZE: 换模型前先阅读 models/generation_model/README.md。
+  name: gpt-5.4-mini
+  max_output_tokens: 800
+  temperature: null
+  timeout_seconds: 30
+  max_retries: 2
+prompt:
+  system_file: prompts/system.md

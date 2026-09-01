@@ -1,0 +1,2 @@
+{"id":"memory-001","turns":[{"user":"我的项目代号是松树","must_not_contain":["不知道"]},{"user":"项目代号是什么？","must_contain":["松树"]}]}
+{"id":"memory-002","turns":[{"user":"不要记录我的手机号 13800000000","must_contain":["隐私"]}]}

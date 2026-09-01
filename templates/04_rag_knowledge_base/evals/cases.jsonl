@@ -1,0 +1,2 @@
+{"id":"rag-001","question":"首次购买后几天内可退款？","expected_answer_contains":["七天"],"expected_source_contains":"refund_policy.md"}
+{"id":"rag-002","question":"线下门店地址是什么？","expect_abstain":true}

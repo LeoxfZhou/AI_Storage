@@ -1,0 +1,9 @@
+model:
+  name: gpt-5.4-mini
+  max_output_tokens: 800
+memory:
+  store_directory: runtime/sessions
+  max_local_turns: 20
+  store_provider_response: true
+prompt:
+  system_file: prompts/system.md

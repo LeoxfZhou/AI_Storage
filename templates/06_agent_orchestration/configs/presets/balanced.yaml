@@ -1,0 +1,3 @@
+agents:
+  max_turns: 6
+  max_output_tokens: 1000

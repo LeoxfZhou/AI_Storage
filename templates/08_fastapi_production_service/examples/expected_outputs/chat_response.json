@@ -1,0 +1,1 @@
+{"answer":"RAG 会先检索相关证据，再让模型基于证据生成回答。","response_id":"resp_example","request_id":"request-example"}

@@ -10,9 +10,11 @@ from typing import List, Optional
 # ``python3 cli.py``。后者没有包上下文，需要把父目录加入模块搜索路径。
 try:
     from .detector import DEFECT_NAMES, TubeDefectDetector
+    from .pipeline_debug import export_typical_pipelines
 except ImportError:  # pragma: no cover - 只有直接运行 cli.py 时进入这个分支。
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from tube_inspection.detector import DEFECT_NAMES, TubeDefectDetector
+    from tube_inspection.pipeline_debug import export_typical_pipelines
 
 
 IMAGE_SUFFIXES = {".bmp", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
@@ -38,6 +40,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         dest="json_path",
         help="另存 JSON；批量模式省略时自动写到 results/summary.json",
+    )
+    parser.add_argument(
+        "--export-pipeline",
+        nargs="?",
+        const="process_debug_output",
+        metavar="DIRECTORY",
+        help=(
+            "批量模式下自动选择四类典型缺陷并导出中间过程图；"
+            "省略目录值时写入 process_debug_output"
+        ),
     )
     parser.add_argument("--quiet", action="store_true", help="不打印格式化报告")
     return parser
@@ -92,10 +104,22 @@ def _run_batch(args: argparse.Namespace, detector: TubeDefectDetector) -> int:
 
     json_path = args.json_path or str(output_dir / "summary.json")
     saved_json = _write_json(json_path, results)
+    pipeline_summary = None
+    if args.export_pipeline:
+        # 先完成正常批量检测，再针对四类各重跑一次调试模式。默认检测仍不承担保存
+        # 大量中间图的开销，只有显式传入该参数时才启用过程可视化。
+        pipeline_summary = export_typical_pipelines(
+            images,
+            detector,
+            output_directory=args.export_pipeline,
+        )
     if not args.quiet:
         success_count = sum("error" not in item for item in results)
         print(f"\n完成 {success_count}/{len(results)} 张；标注图：{output_dir}")
         print(f"JSON 汇总：{saved_json}")
+        if pipeline_summary is not None:
+            print(f"过程图目录：{pipeline_summary['output_directory']}")
+            print(f"流程说明：{pipeline_summary['explanation_path']}")
     return 0 if all("error" not in item for item in results) else 1
 
 
@@ -106,6 +130,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         parser.error("请提供一张 image，或使用 --batch DIRECTORY；两者必须且只能选一个")
     if args.batch and args.output:
         parser.error("--output 只用于单张模式；批量模式请使用 --output-dir")
+    if args.export_pipeline and not args.batch:
+        parser.error("--export-pipeline 需要与 --batch DIRECTORY 一起使用")
 
     try:
         # 检测器只初始化一次；批量模式不会为每张图重复读取和预处理良品模板。

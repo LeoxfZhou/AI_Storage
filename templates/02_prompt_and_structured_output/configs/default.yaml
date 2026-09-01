@@ -1,0 +1,7 @@
+model:
+  name: gpt-5.4-mini
+  max_output_tokens: 600
+input:
+  max_characters: 12000
+prompt:
+  template_file: prompts/extract_ticket.j2

@@ -1,0 +1,15 @@
+generation:
+  model: gpt-5.4-mini
+  max_output_tokens: 1000
+embedding:
+  model: text-embedding-3-small
+retrieval:
+  document_directory: examples/inputs
+  chunk_characters: 800
+  chunk_overlap: 120
+  top_k: 4
+  min_score: 0.15
+  lexical_weight: 0.2
+prompt:
+  system_file: prompts/system.md
+  answer_template: prompts/answer_with_citations.j2

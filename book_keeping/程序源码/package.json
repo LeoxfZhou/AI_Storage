@@ -1,0 +1,13 @@
+{
+  "name": "book-keeping-standardizer",
+  "version": "2.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "app": "node web/server.mjs --open",
+    "template": "node prepare_data.mjs template",
+    "migrate": "node prepare_data.mjs migrate --input 流水.xlsx --output outputs/标准化输入数据.xlsx",
+    "report": "node generate_report.mjs --input outputs/标准化输入数据.xlsx --output outputs/记账分析报告.xlsx",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs"
+  }
+}

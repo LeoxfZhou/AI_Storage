@@ -1,17 +1,23 @@
-# 原始数据体积较大，并且通常不适合直接进入 Git 历史。
-# 使用从仓库根目录开始的精确路径，避免误伤其他可能叫 datas 的目录。
-/tube_inspection/datas/
-
-# 检测输入和输出图片属于本地数据，不进入 Git 历史。
-# 按扩展名忽略可以覆盖 datas、results 和 example_results，
-# 也能防止以后在其他目录新增同类图片时被误提交。
-*.jpg
-*.jpeg
-*.bmp
-
-# macOS 会自动生成这些目录元数据文件，它们与项目功能无关。
+# 操作系统和 IDE 生成的本地文件。
 .DS_Store
+.idea/
 
-# Python 运行时自动生成的字节码缓存；不同电脑上可以重新生成。
+# Python 虚拟环境、测试缓存和字节码。
+.venv/
 __pycache__/
 *.py[cod]
+.pytest_cache/
+
+# Node.js 依赖可通过包管理器重新安装。
+node_modules
+
+# 本地环境变量可能包含凭据；保留可公开的示例文件。
+.env
+.env.*
+!.env.example
+
+# 管材检测的原始数据、生成结果和调试图片不进入 Git 历史。
+/tube_inspection/datas/
+/tube_inspection/results/
+/tube_inspection/example_results/
+/tube_inspection/process_debug_output/

@@ -1,0 +1,9 @@
+问题：{{ question }}
+
+可用证据：
+{% for hit in hits %}
+[{{ hit.chunk.id }}] 来源={{ hit.chunk.source }}
+{{ hit.chunk.text }}
+{% endfor %}
+
+请回答问题，并在 `citations` 中只返回实际使用过的证据 ID。

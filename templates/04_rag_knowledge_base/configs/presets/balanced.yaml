@@ -1,0 +1,5 @@
+generation:
+  max_output_tokens: 1000
+retrieval:
+  top_k: 4
+  chunk_characters: 800

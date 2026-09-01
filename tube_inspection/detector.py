@@ -13,7 +13,7 @@ import json
 import math
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -569,7 +569,12 @@ class TubeDefectDetector:
             )
         return candidates
 
-    def _centerline_curvature(self, gray: np.ndarray, pose: TubePose) -> Tuple[float, np.ndarray]:
+    def _centerline_curvature(
+        self,
+        gray: np.ndarray,
+        pose: TubePose,
+        debug_recorder: Optional[Any] = None,
+    ) -> Tuple[float, np.ndarray]:
         """由管身两侧边缘分箱估计中心线，返回最大残差/管长。"""
         edges = cv2.Canny(gray, self.config.canny_low, self.config.canny_high)
         expanded = pose_polygon(pose.center, pose.angle, pose.length, pose.width * 1.7)
@@ -618,6 +623,50 @@ class TubeDefectDetector:
         straight = np.polyval(np.polyfit(sample_t, smooth_curve, 1), sample_t)
         deviation = float(np.max(np.abs(smooth_curve - straight)))
         world_points = center + np.outer(centerline[:, 0], direction) + np.outer(centerline[:, 1], normal)
+
+        if debug_recorder is not None and debug_recorder.defect_type == "BENDING":
+            # 将“切片中心点、二次拟合曲线、最佳直线”绘在同一张图上。只保存最终
+            # 数值无法判断误差来自哪一个切片，这张图能直接支持工程人员调 Canny、
+            # 分位数和 MAD 阈值。
+            canvas = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            curve_world = center + np.outer(sample_t, direction) + np.outer(smooth_curve, normal)
+            line_world = center + np.outer(sample_t, direction) + np.outer(straight, normal)
+            for point in world_points:
+                cv2.circle(canvas, tuple(np.round(point).astype(int)), 5, (0, 255, 255), -1)
+            cv2.polylines(
+                canvas,
+                [np.round(curve_world).astype(np.int32)],
+                False,
+                (0, 0, 255),
+                3,
+                cv2.LINE_AA,
+            )
+            cv2.polylines(
+                canvas,
+                [np.round(line_world).astype(np.int32)],
+                False,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                canvas,
+                f"yellow=slice centers  red=quadratic  green=best line  ratio={deviation/max(pose.length,1.0):.5f}",
+                (20, 42),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            debug_recorder.save(
+                2,
+                "centerline_fit",
+                canvas,
+                "使用 cv2.Canny 提取管壁边缘，沿管轴切成 24 段；每段用 12%/88% 分位数估计中心。"
+                "黄色点是切片中心，np.polyfit(degree=2) 得到红色二次曲线，绿色为最佳直线；"
+                "两者最大距离除以管长就是弯曲率。MAD 迭代用于剔除暗点和划痕造成的离群切片。",
+            )
         return deviation / max(pose.length, 1.0), world_points.astype(np.float32)
 
     # ------------------------------------------------------------------
@@ -791,7 +840,12 @@ class TubeDefectDetector:
             polygon=pose_polygon(refined_center, pose.angle, pose.length, refined_width),
         )
 
-    def _blue_body_polygon(self, image: np.ndarray, pose: TubePose) -> np.ndarray:
+    def _blue_body_polygon(
+        self,
+        image: np.ndarray,
+        pose: TubePose,
+        debug_recorder: Optional[Any] = None,
+    ) -> np.ndarray:
         """提取 01 组蓝色管身，并返回从透明/蓝色交界处开始的弯曲管段。"""
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         blue = (
@@ -800,15 +854,53 @@ class TubeDefectDetector:
             & (hsv[:, :, 1] >= 100)
             & (hsv[:, :, 2] >= 35)
         ).astype(np.uint8) * 255
+        if debug_recorder is not None:
+            debug_recorder.save(
+                3,
+                "blue_hsv_mask",
+                blue,
+                "使用 cv2.cvtColor(BGR→HSV) 后执行 H=90~150、S>=100、V>=35 阈值过滤。"
+                "透明直段只有细蓝线，实体弯段形成较宽白色区域，因此蓝色掩膜既能分离管身，"
+                "也为直弯交界定位提供横向宽度信号。",
+            )
 
         # 透明直管内也能看到一条细蓝线；弯曲实体段的每行蓝色像素明显更多。
         # 连续 9 行做平均可避免单根刻度线偶然越过阈值。
         row_counts = np.count_nonzero(blue, axis=1).astype(np.float32)
         smooth_counts = np.convolve(row_counts, np.ones(9) / 9.0, mode="same")
         wide_rows = np.flatnonzero(smooth_counts >= 0.55 * pose.width)
+        onset_y = 0
         if wide_rows.size:
             onset_y = max(0, int(wide_rows[0]) - 4)
             blue[:onset_y] = 0
+
+        if debug_recorder is not None:
+            onset_canvas = image.copy()
+            cv2.line(
+                onset_canvas,
+                (0, onset_y),
+                (image.shape[1] - 1, onset_y),
+                (0, 0, 255),
+                4,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                onset_canvas,
+                f"bend onset row={onset_y}; threshold=0.55*tube_width",
+                (20, max(42, onset_y - 16)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            debug_recorder.save(
+                4,
+                "bend_onset_slice",
+                onset_canvas,
+                "逐行统计蓝色像素并用 9 行均值平滑；第一行达到 55% 管宽的位置就是红色直弯"
+                "交界切片。交界以上像素被清零，使最终框从拐点开始而不是覆盖透明直段。",
+            )
 
         close_size = max(3, int(round(0.06 * pose.width)) | 1)
         blue = cv2.morphologyEx(
@@ -820,13 +912,45 @@ class TubeDefectDetector:
         if not contours:
             return pose.polygon.copy()
         # 最大蓝色区域是管身；小区域一般是背景中的色噪声或镜面反光。
-        return cv2.convexHull(max(contours, key=cv2.contourArea)).reshape(-1, 2).astype(np.float32)
+        hull = cv2.convexHull(max(contours, key=cv2.contourArea)).reshape(-1, 2).astype(np.float32)
+        if debug_recorder is not None:
+            hull_canvas = image.copy()
+            cv2.polylines(
+                hull_canvas,
+                [np.round(hull).astype(np.int32)],
+                True,
+                (0, 0, 255),
+                4,
+                cv2.LINE_AA,
+            )
+            overlay = np.zeros_like(hull_canvas)
+            cv2.fillConvexPoly(overlay, np.round(hull).astype(np.int32), (255, 80, 0))
+            hull_canvas = cv2.addWeighted(hull_canvas, 0.78, overlay, 0.22, 0)
+            debug_recorder.save(
+                5,
+                "bend_region_hull",
+                hull_canvas,
+                "对拐点以下蓝色掩膜执行椭圆 MORPH_CLOSE 连接反光孔洞，再用 "
+                "cv2.findContours 选择最大管身轮廓，cv2.convexHull 生成覆盖完整弯段的区域。",
+            )
+        return hull
 
     def _locate_dark_spot(
-        self, image: np.ndarray, pose: TubePose
+        self,
+        image: np.ndarray,
+        pose: TubePose,
+        debug_recorder: Optional[Any] = None,
     ) -> Optional[Tuple[np.ndarray, Dict[str, float]]]:
         """用 HSV 棕色掩膜定位 02 组暗斑。"""
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        if debug_recorder is not None:
+            debug_recorder.save(
+                2,
+                "hsv_space",
+                debug_recorder.hsv_channel_panel(hsv),
+                "cv2.cvtColor(BGR→HSV) 将颜色拆成色相 H、饱和度 S 和亮度 V。三幅灰度图"
+                "从左到右分别显示 H/S/V；暗斑呈棕褐色，在 H 和 S 上比透明管壁更容易分离。",
+            )
         tube_mask = polygon_mask(image.shape[:2], pose.polygon)
         erode_radius = max(1, int(round(0.12 * pose.width)))
         tube_mask = cv2.erode(
@@ -843,12 +967,29 @@ class TubeDefectDetector:
             & (hsv[:, :, 2] <= 225)
             & (tube_mask > 0)
         ).astype(np.uint8) * 255
+        if debug_recorder is not None:
+            debug_recorder.save(
+                3,
+                "hsv_mask",
+                binary,
+                "在向内腐蚀 12% 管宽的管身 ROI 中执行 H<=35、S>=35、V<=225 阈值过滤。"
+                "白色表示棕褐色候选，腐蚀 ROI 用于排除管壁高光和背景。",
+            )
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        if debug_recorder is not None:
+            debug_recorder.save(
+                4,
+                "morphology_open",
+                binary,
+                "使用 cv2.morphologyEx(MORPH_OPEN, 3×3 方形 Kernel) 先腐蚀后膨胀，"
+                "删除无法形成稳定斑块的孤立色噪点，同时保留主要暗斑形状。",
+            )
         count, labels, stats, centroids = cv2.connectedComponentsWithStats(binary)
 
         min_area = max(8.0, 0.003 * pose.width * pose.width)
         max_area = 0.15 * pose.width * pose.width
         best_index, best_score = None, -1.0
+        candidate_indices: List[int] = []
         for index in range(1, count):
             x, y, width, height, area = stats[index]
             aspect = max(width, height) / max(1.0, min(width, height))
@@ -856,6 +997,7 @@ class TubeDefectDetector:
                 continue
             if self._axis_distance_ratio(centroids[index], pose) > 0.46:
                 continue
+            candidate_indices.append(index)
             mean_saturation = float(np.mean(hsv[:, :, 1][labels == index]))
             score = mean_saturation * math.sqrt(float(area))
             if score > best_score:
@@ -863,12 +1005,46 @@ class TubeDefectDetector:
         if best_index is None:
             return None
 
+        if debug_recorder is not None:
+            candidates_canvas = image.copy()
+            for index in candidate_indices:
+                x_i, y_i, w_i, h_i, _area_i = map(int, stats[index])
+                color = (0, 0, 255) if index == best_index else (0, 255, 255)
+                thickness = 4 if index == best_index else 2
+                cv2.rectangle(
+                    candidates_canvas,
+                    (x_i, y_i),
+                    (x_i + w_i, y_i + h_i),
+                    color,
+                    thickness,
+                )
+            debug_recorder.save(
+                5,
+                "connected_components",
+                candidates_canvas,
+                "cv2.connectedComponentsWithStats 计算每个白色区域的面积、外接框和质心。"
+                "黄色框为满足面积/长宽比/轴向位置条件的候选，红框为按“平均饱和度×面积平方根”"
+                "得分选出的最佳暗斑。",
+            )
+
         x, y, width, height, area = map(int, stats[best_index])
         component = (labels == best_index).astype(np.uint8) * 255
         ring = cv2.dilate(component, np.ones((11, 11), np.uint8))
         ring = (ring > component) & (tube_mask > 0)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         darkness = float(np.mean(gray[ring]) - np.mean(gray[component > 0])) if np.any(ring) else 0.0
+        if debug_recorder is not None:
+            ring_canvas = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            ring_canvas[ring] = (0, 255, 255)
+            ring_canvas[component > 0] = (0, 0, 255)
+            debug_recorder.save(
+                6,
+                "ring_neighborhood",
+                ring_canvas,
+                "将最佳连通域用 11×11 Kernel 膨胀后减去原区域得到外围环。红色为暗斑，"
+                "黄色为邻域环；局部暗度等于“黄色环平均灰度－红色区域平均灰度”，正值表示"
+                "候选确实比周围更暗。",
+            )
         values = {
             "area_px_working": float(area),
             "mean_saturation": round(float(np.mean(hsv[:, :, 1][component > 0])), 2),
@@ -878,7 +1054,10 @@ class TubeDefectDetector:
         return self._axis_aligned_polygon((x, y, width, height), image.shape[:2], padding), values
 
     def _locate_scratch(
-        self, image: np.ndarray, pose: TubePose
+        self,
+        image: np.ndarray,
+        pose: TubePose,
+        debug_recorder: Optional[Any] = None,
     ) -> Optional[Tuple[np.ndarray, Dict[str, float]]]:
         """用亮顶帽定位 03 组比周围更亮的 V 形划痕。"""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -888,6 +1067,16 @@ class TubeDefectDetector:
             cv2.MORPH_TOPHAT,
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)),
         )
+        if debug_recorder is not None:
+            debug_recorder.save(
+                2,
+                "tophat",
+                debug_recorder.response_heatmap(top_hat),
+                "先用 cv2.cvtColor(BGR→GRAY)，再执行 cv2.morphologyEx(MORPH_TOPHAT)。"
+                "椭圆 Kernel 边长取 20% 管宽且至少为 9。白顶帽等于“原灰度－开运算结果”，"
+                "能够消除缓慢变化的照明背景，突出比周围管壁更亮的微小 V 形划痕。伪彩色越暖"
+                "表示顶帽响应越强。",
+            )
         tube_mask = polygon_mask(gray.shape, pose.polygon)
         erode_radius = max(1, int(round(0.16 * pose.width)))
         tube_mask = cv2.erode(
@@ -896,18 +1085,43 @@ class TubeDefectDetector:
                 cv2.MORPH_ELLIPSE, (2 * erode_radius + 1, 2 * erode_radius + 1)
             ),
         )
+        if debug_recorder is not None:
+            debug_recorder.save(
+                3,
+                "tube_inner_mask",
+                tube_mask,
+                "使用 TubePose 四点管身区域生成 ROI，再用椭圆 Kernel 向内腐蚀 16% 管宽。"
+                "白色是允许检测划痕的内部区域；排除两侧管壁可减少长条高光造成的误检。",
+            )
         binary = (
             (top_hat >= self.config.scratch_tophat_threshold) & (tube_mask > 0)
         ).astype(np.uint8) * 255
+        if debug_recorder is not None:
+            debug_recorder.save(
+                4,
+                "tophat_threshold",
+                binary,
+                "将顶帽响应按 scratch_tophat_threshold=20 二值化，并与管内 ROI 求交。"
+                "白色像素表示局部亮度至少产生 20 灰度级顶帽响应的划痕候选。",
+            )
         close_size = max(3, int(round(0.03 * pose.width)) | 1)
         binary = cv2.morphologyEx(
             binary, cv2.MORPH_CLOSE, np.ones((close_size, close_size), np.uint8)
         )
+        if debug_recorder is not None:
+            debug_recorder.save(
+                5,
+                "morphology_close",
+                binary,
+                "使用 cv2.morphologyEx(MORPH_CLOSE) 先膨胀后腐蚀，方形 Kernel 边长为"
+                "约 3% 管宽。该操作连接 V 形划痕中因反光或噪声造成的小断点。",
+            )
         count, labels, stats, centroids = cv2.connectedComponentsWithStats(binary)
 
         min_area = max(30.0, 0.004 * pose.width * pose.width)
         max_area = 0.25 * pose.width * pose.width
         best_index, best_score = None, -1.0
+        candidate_indices: List[int] = []
         for index in range(1, count):
             x, y, width, height, area = stats[index]
             box_ratio = width / max(float(height), 1.0)
@@ -923,12 +1137,33 @@ class TubeDefectDetector:
             axis_distance = self._axis_distance_ratio(centroids[index], pose)
             if axis_distance > 0.40:
                 continue
+            candidate_indices.append(index)
             contrast = float(np.mean(top_hat[labels == index]))
             score = contrast * math.sqrt(float(area)) * math.exp(-2.0 * axis_distance)
             if score > best_score:
                 best_index, best_score = index, score
         if best_index is None:
             return None
+
+        if debug_recorder is not None:
+            candidates_canvas = image.copy()
+            for index in candidate_indices:
+                x_i, y_i, w_i, h_i, _area_i = map(int, stats[index])
+                color = (0, 0, 255) if index == best_index else (0, 255, 255)
+                cv2.rectangle(
+                    candidates_canvas,
+                    (x_i, y_i),
+                    (x_i + w_i, y_i + h_i),
+                    color,
+                    4 if index == best_index else 2,
+                )
+            debug_recorder.save(
+                6,
+                "connected_components",
+                candidates_canvas,
+                "连通域先通过面积、宽高比、尺寸、高度和管轴位置的 AND 条件。黄色为合格"
+                "候选，红色为按“平均顶帽对比度×面积平方根×中心位置权重”选出的最佳 V 形划痕。",
+            )
 
         x, y, width, height, area = map(int, stats[best_index])
         contrast = float(np.mean(top_hat[labels == best_index]))
@@ -941,7 +1176,10 @@ class TubeDefectDetector:
         return self._axis_aligned_polygon((x, y, width, height), image.shape[:2], padding), values
 
     def _locate_inclusion(
-        self, image: np.ndarray, pose: TubePose
+        self,
+        image: np.ndarray,
+        pose: TubePose,
+        debug_recorder: Optional[Any] = None,
     ) -> Optional[Tuple[np.ndarray, Dict[str, float]]]:
         """用暗底帽定位 04 组管内黑色颗粒聚集区。"""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -951,10 +1189,35 @@ class TubeDefectDetector:
             cv2.MORPH_BLACKHAT,
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)),
         )
+        if debug_recorder is not None:
+            debug_recorder.save(
+                2,
+                "blackhat",
+                debug_recorder.response_heatmap(black_hat),
+                "先用 cv2.cvtColor(BGR→GRAY)，再执行 cv2.morphologyEx(MORPH_BLACKHAT)。"
+                "椭圆 Kernel 边长取 13% 管宽且至少为 9。黑帽等于“闭运算结果－原灰度”，"
+                "专门突出比透明管局部背景更暗的小颗粒；伪彩色越暖表示暗颗粒响应越强。",
+            )
         tube_mask = polygon_mask(gray.shape, pose.polygon)
+        if debug_recorder is not None:
+            debug_recorder.save(
+                3,
+                "tube_mask",
+                tube_mask,
+                "用 TubePose.polygon 和 cv2.fillConvexPoly 生成管身 ROI。杂质分支保留完整"
+                "管宽，不预先腐蚀，以免靠近管壁的小颗粒被直接删掉。",
+            )
         binary = (
             (black_hat >= self.config.inclusion_blackhat_threshold) & (tube_mask > 0)
         ).astype(np.uint8) * 255
+        if debug_recorder is not None:
+            debug_recorder.save(
+                4,
+                "blackhat_threshold",
+                binary,
+                "将黑帽响应按 inclusion_blackhat_threshold=30 二值化并限制在管身 ROI。"
+                "这里故意不做闭运算，因为 CLOSE 会把毛丝和暗边连接成巨大伪区域。",
+            )
         # 这里故意不做 CLOSE。毛丝和反光很多，闭运算会把原本分离的细线接成一个
         # 巨大连通域，反而淹没真正紧凑的杂质颗粒。
         count, labels, stats, centroids = cv2.connectedComponentsWithStats(binary)
@@ -962,6 +1225,7 @@ class TubeDefectDetector:
         min_area = max(10.0, 0.0006 * pose.width * pose.width)
         max_area = 0.08 * pose.width * pose.width
         best_index, best_score = None, -1.0
+        candidate_indices: List[int] = []
         for index in range(1, count):
             x, y, width, height, area = stats[index]
             aspect = max(width, height) / max(1.0, min(width, height))
@@ -974,6 +1238,7 @@ class TubeDefectDetector:
             axis_distance = self._axis_distance_ratio(centroids[index], pose)
             if axis_distance > 0.42:
                 continue
+            candidate_indices.append(index)
             contrast = float(np.mean(black_hat[labels == index]))
             # 颗粒簇在当前工位位于管身中段。中心先验只用于同类候选排序，不单独
             # 触发缺陷；必须同时满足面积、形状和局部暗对比度条件。
@@ -982,6 +1247,27 @@ class TubeDefectDetector:
                 best_index, best_score = index, score
         if best_index is None:
             return None
+
+        if debug_recorder is not None:
+            candidates_canvas = image.copy()
+            for index in candidate_indices:
+                x_i, y_i, w_i, h_i, _area_i = map(int, stats[index])
+                color = (0, 0, 255) if index == best_index else (0, 255, 255)
+                cv2.rectangle(
+                    candidates_canvas,
+                    (x_i, y_i),
+                    (x_i + w_i, y_i + h_i),
+                    color,
+                    4 if index == best_index else 2,
+                )
+            debug_recorder.save(
+                5,
+                "connected_components",
+                candidates_canvas,
+                "cv2.connectedComponentsWithStats 提取黑帽白色区域。黄色框通过面积、紧凑度、"
+                "最长边和轴向位置过滤；红框按“平均黑帽对比度×面积平方根×中心先验”取得最高分，"
+                "作为最终杂质颗粒簇。",
+            )
 
         x, y, width, height, area = map(int, stats[best_index])
         contrast = float(np.mean(black_hat[labels == best_index]))
@@ -998,6 +1284,7 @@ class TubeDefectDetector:
         image: np.ndarray,
         pose: TubePose,
         curvature: float,
+        debug_recorder: Optional[Any] = None,
     ) -> Optional[Tuple[str, np.ndarray, Dict[str, float], str, str]]:
         """为 datas 的四种采集工位选择检测分支，并要求局部证据后再报缺陷。
 
@@ -1024,7 +1311,7 @@ class TubeDefectDetector:
             blue_ratio >= self.config.profile_blue_area_ratio
             and angle >= self.config.profile_min_oblique_angle_deg
         ):
-            region = self._blue_body_polygon(image, pose)
+            region = self._blue_body_polygon(image, pose, debug_recorder)
             routing_values["curvature_ratio"] = round(curvature, 5)
             if curvature >= self.config.profile_bending_curvature_ratio:
                 description = (
@@ -1047,7 +1334,7 @@ class TubeDefectDetector:
             )
 
         if angle <= self.config.profile_horizontal_angle_deg:
-            located = self._locate_scratch(image, pose)
+            located = self._locate_scratch(image, pose, debug_recorder)
             if located is not None:
                 polygon, local_values = located
                 values = {**routing_values, **local_values}
@@ -1069,7 +1356,7 @@ class TubeDefectDetector:
 
         if angle >= self.config.profile_min_oblique_angle_deg:
             if width_ratio <= self.config.profile_narrow_tube_width_ratio:
-                located = self._locate_dark_spot(image, pose)
+                located = self._locate_dark_spot(image, pose, debug_recorder)
                 if located is not None:
                     polygon, local_values = located
                     values = {**routing_values, **local_values}
@@ -1089,7 +1376,7 @@ class TubeDefectDetector:
                     "试管主体区域（未发现缺陷）",
                 )
 
-            located = self._locate_inclusion(image, pose)
+            located = self._locate_inclusion(image, pose, debug_recorder)
             if located is not None:
                 polygon, local_values = located
                 values = {**routing_values, **local_values}
@@ -1121,14 +1408,27 @@ class TubeDefectDetector:
         save_visualization: Optional[str] = None,
         show: bool = False,
         print_report: bool = True,
+        debug_recorder: Optional[Any] = None,
     ) -> Dict[str, object]:
         original = imread_unicode(image_path)
+        if debug_recorder is not None:
+            debug_recorder.save(
+                1,
+                "original",
+                original,
+                "原始输入图。后续计算会按最长边 1800 等比例缩放为工作图，但最终缺陷框"
+                "仍映射回这张原图的坐标和分辨率。",
+            )
         working, working_scale = self._limit_size(original)
         input_pose = self._estimate_tube_pose(working)
         input_pose = self._refine_horizontal_pose(working, input_pose)
         input_gray = self._preprocess_gray(working)
-        curvature, _centerline = self._centerline_curvature(input_gray, input_pose)
-        calibrated = self._calibrated_dataset_decision(working, input_pose, curvature)
+        curvature, _centerline = self._centerline_curvature(
+            input_gray, input_pose, debug_recorder
+        )
+        calibrated = self._calibrated_dataset_decision(
+            working, input_pose, curvature, debug_recorder
+        )
         working_to_original = np.array(
             [[1.0 / working_scale, 0.0, 0.0], [0.0, 1.0 / working_scale, 0.0]],
             dtype=np.float32,
@@ -1192,6 +1492,24 @@ class TubeDefectDetector:
             alignment_score=alignment_score,
         )
         rendered = self._visualize(original, defect_type, location_polygon, feature_values)
+        if debug_recorder is not None:
+            if defect_type != debug_recorder.defect_type:
+                raise RuntimeError(
+                    f"调试记录器期望 {debug_recorder.defect_type}，实际检测为 {defect_type}"
+                )
+            final_steps = {
+                "BENDING": 6,
+                "DARK_SPOT": 7,
+                "SCRATCH": 7,
+                "INCLUSION": 6,
+            }
+            debug_recorder.save(
+                final_steps[defect_type],
+                "final_bbox",
+                rendered,
+                "将工作图中的最终多边形按 1/working_scale 映射回原图，再由 clipped_bbox "
+                "得到 [x,y,width,height]。红框表示缺陷区域，左上角标签给出类别和关键响应值。",
+            )
         if save_visualization:
             result.visualization_path = imwrite_unicode(save_visualization, rendered)
         if show:

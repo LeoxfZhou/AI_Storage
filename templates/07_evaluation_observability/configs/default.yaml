@@ -1,0 +1,12 @@
+model:
+  name: gpt-5.4-mini
+  max_output_tokens: 700
+evaluation:
+  case_file: evals/cases.jsonl
+  output_file: runtime/eval_results.jsonl
+  pass_threshold: 1.0
+pricing:
+  input_per_million_tokens: 0.0
+  output_per_million_tokens: 0.0
+prompt:
+  system_file: prompts/system.md

@@ -35,6 +35,7 @@ tube_inspection/
 ├── detector.py
 ├── geometry.py
 ├── models.py
+├── pipeline_debug.py
 ├── 说明.txt
 ├── 项目架构与运行逻辑说明.txt
 │
@@ -65,6 +66,13 @@ tube_inspection/
 │   ├── 4_02_result.jpg
 │   └── summary.json
 │
+├── process_debug_output/
+│   ├── bending_step01_original.png ... bending_step06_final_bbox.png
+│   ├── dark_spot_step01_original.png ... dark_spot_step07_final_bbox.png
+│   ├── scratch_step01_original.png ... scratch_step07_final_bbox.png
+│   ├── inclusion_step01_original.png ... inclusion_step06_final_bbox.png
+│   └── pipeline_explanation.txt
+│
 ├── __pycache__/
 ├── .idea/
 └── .DS_Store
@@ -82,6 +90,7 @@ tube_inspection/
    - DetectorConfig：检测参数配置类；
    - TubeDefectDetector：完整检测器类；
    - detect_tube：最简单的一行式检测函数。
+   - export_typical_pipelines：自动选择四类样本并导出处理过程。
 
    因此可以在项目父目录这样使用：
 
@@ -113,6 +122,7 @@ tube_inspection/
    - 调用 detector.py；
    - 保存 JSON；
    - 打印检测摘要；
+   - 根据 --export-pipeline 决定是否导出四类典型样本的处理过程；
    - 处理文件不存在、图片损坏等错误。
 
    它不负责具体判断缺陷，真正算法都在 detector.py。
@@ -180,7 +190,22 @@ tube_inspection/
    这个文件是程序最重要、执行逻辑最集中的部分。
 
 
-8. 说明.txt
+8. pipeline_debug.py
+
+   这是过程可视化模块，负责：
+
+   - PipelineDebugRecorder：按类别维护步骤编号，并保存规范命名的 PNG；
+   - DebugStep：记录某一步的文件名、算子名称和技术说明；
+   - export_typical_pipelines：先按真实检测结果筛选四类图片，再以记录模式重跑；
+   - hsv_channel_panel：把 H、S、V 三个通道拼成便于观察的面板；
+   - response_heatmap：把单通道顶帽/底帽响应转换成伪彩色热力图；
+   - _write_pipeline_explanation：根据本次真实记录的步骤生成说明文档。
+
+   该模块不复制一套检测算法。它把记录器传入 detector.py，让最终检测和过程导出
+   共用同一条代码路径，避免“展示图使用的算法”和“实际判定算法”不一致。
+
+
+9. 说明.txt
 
    这是面向使用者的简要说明，包括：
 
@@ -191,7 +216,7 @@ tube_inspection/
    - 当前数据量过少所带来的使用边界。
 
 
-9. datas/
+10. datas/
 
    原始输入数据目录，共 8 张 BMP 图片：
 
@@ -202,14 +227,14 @@ tube_inspection/
    - 4_01.bmp、4_02.bmp：杂质。
 
 
-10. example_results/
+11. example_results/
 
     用户提供的示例标注图片，用来理解四种缺陷的正确位置和名称。
 
     程序运行时不会直接读取这些图片。它们是开发、调参和人工核对时的参考资料。
 
 
-11. results/
+12. results/
 
     程序批量检测后生成的输出目录。
 
@@ -219,21 +244,27 @@ tube_inspection/
     缺陷使用红框，正常图片使用绿框。
 
 
-12. __pycache__/
+13. process_debug_output/
+
+    运行 --export-pipeline 后生成的过程图和 pipeline_explanation.txt。
+    目录中的 step 编号就是该缺陷分支的真实执行顺序。
+
+
+14. __pycache__/
 
     Python 自动生成的字节码缓存目录，用于加快模块再次加载。
 
     它不是项目源码，可以删除；下次运行 Python 时会自动重新生成。
 
 
-13. .idea/
+15. .idea/
 
     PyCharm/IntelliJ 的项目配置目录，保存编辑器工作区和项目设置。
 
     它不参与检测算法，也不影响命令行运行。
 
 
-14. .DS_Store
+16. .DS_Store
 
     macOS Finder 自动生成的目录显示配置文件，与项目算法无关。
 
@@ -439,6 +470,7 @@ DetectorConfig 是一个 dataclass，本身没有执行函数，主要用于保�
    - --template：良品模板路径；
    - --output：单张结果图路径；
    - --output-dir：批量结果目录；
+   - --export-pipeline [目录]：从批量结果中选择四类样本并导出中间过程图；
    - --show：显示结果图；
    - --json：JSON 输出路径；
    - --quiet：不打印详细报告。
@@ -472,6 +504,7 @@ DetectorConfig 是一个 dataclass，本身没有执行函数，主要用于保�
    - 将 image_path 添加到每张结果中；
    - 单张失败时记录 error，而不是中断整个批次；
    - 保存 summary.json；
+   - 如果指定 --export-pipeline，调用 export_typical_pipelines 生成过程图和说明文档；
    - 返回退出码：全部成功为 0，有失败为 1。
 
 
@@ -1050,15 +1083,40 @@ _write_json() 保存 summary.json
 NORMAL，文档中将其记为 OK；另外四类代码分别为 BENDING、DARK_SPOT、SCRATCH 和
 INCLUSION。
 
+公式阅读约定：
+
+    W0：原始图片宽度；
+    H0：原始图片高度；
+    W ：程序缩放后的工作图宽度；
+    H ：程序缩放后的工作图高度；
+    s ：原图缩小成工作图时使用的缩放比例；
+    L ：检测到的管身长度；
+    Wt：检测到的管身宽度；
+    x、y：像素坐标；
+    AND：前后条件必须同时满足，也就是中文的“并且”；
+    OR ：满足其中任意一个条件，也就是中文的“或者”；
+    >= ：大于或等于；
+    <= ：小于或等于；
+    √  ：开平方；
+    ²  ：平方，例如 W² 表示 W×W。
+
+下面保留少量公式是为了准确说明程序怎样计算，但不再使用美元符号、反斜杠命令或
+需要数学排版软件才能显示的写法。每个公式后面都配有中文解释。
+
 11.0 五类判定共享的姿态、工位和模板差分基础
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-在进入任何类别判定前，程序先把原图缩放成工作图。若原图尺寸为 $W_0\times H_0$，
+在进入任何类别判定前，程序先把原图缩放成工作图。设 W0 为原图宽度、H0 为原图
+高度，即原图尺寸为“W0 × H0”，
 内部最长处理边为 1800，则缩放比例为：
 
-    s = min(1, 1800 / max(W_0, H_0))
+    s = 1 与“1800 ÷ 原图最长边”两者中的较小值
 
-工作图尺寸约为 $(sW_0, sH_0)$。后续面积、Kernel 和坐标均先在工作图中计算。
+换句话说：原图最长边不超过 1800 像素时不缩小，s 等于 1；原图最长边超过 1800
+像素时，将最长边缩小到 1800，并让另一条边保持相同比例。
+
+工作图宽度约为 s × W0，工作图高度约为 s × H0。后续面积、Kernel 和坐标均先在
+工作图中计算。
 
 （1）管身姿态 TubePose 的提取
 
@@ -1072,47 +1130,49 @@ INCLUSION。
     cv2.Canny(gray, 35, 110)
     cv2.HoughLinesP(
         rho=1,
-        theta=pi/180,
+        角度步长=1°，
         threshold=max(30, 0.025*D),
         minLineLength=max(30, 0.05*D),
         maxLineGap=max(8, 0.015*D)
     )
 
-其中 $D=\sqrt{W^2+H^2}$ 为图像对角线。算法不是简单采用票数最高的 Hough 线，
-而是寻找方向误差不大于 8°、法向间距位于 $[0.03S,0.20S]$、纵向重叠率不小于
-0.40 的平行边缘对，其中 $S=min(W,H)$。由最佳边缘对得到：
+其中 D 是图像对角线长度，计算方式为“宽度平方加高度平方，然后开平方”，即
+D = √(W² + H²)。算法不是简单采用票数最高的 Hough 线，而是寻找方向误差不大于
+8°、法向间距位于“图像短边的 3%～20%”之间、纵向重叠率不小于 40% 的平行边缘对。
+这里 S 表示图像宽度和高度中的较小值。由最佳边缘对得到：
 
-    TubePose = (center, theta, length=L, width=W_t, polygon)
+    TubePose =（管身中心、管身角度、管身长度 L、管身宽度 Wt、四点轮廓）
 
 这里的 `polygon` 是通过 `cv2.boxPoints` 得到的旋转管身矩形。
 
 （2）用于工位分流的三个量
 
-无方向角被归一化到 $[0°,90°]$：
+无方向角被归一化到 0°～90°：
 
-    theta_n = abs(degrees(theta)) mod 180
-    theta_n = 180 - theta_n,  if theta_n > 90
+    第一步：取管身角度的绝对值，并转换成角度制；
+    第二步：如果结果超过 180°，只保留除以 180° 后的余数；
+    第三步：如果结果大于 90°，就用 180° 减去它。
 
 因此 0° 表示水平，90° 表示竖直。管宽比例为：
 
-    r_w = W_t / min(W,H)
+    管宽比例 = 检测到的管身宽度 Wt ÷ 工作图短边长度
 
-蓝色像素集合在 OpenCV HSV 空间中定义为：
+在 OpenCV HSV 空间中，一个像素必须同时满足以下三个条件，才被视为蓝色像素：
 
-    B = {(x,y) | 90 <= H(x,y) <= 150,
-                   S(x,y) >= 100,
-                   V(x,y) >= 35}
+    色相 H 在 90～150 之间；
+    饱和度 S 大于或等于 100；
+    亮度 V 大于或等于 35。
 
 蓝色像素占比为：
 
-    r_blue = |B| / (W*H)
+    蓝色像素占比 = 蓝色像素数量 ÷ 工作图总像素数量
 
 主路径按以下优先级分流：
 
-    A. r_blue >= 0.020 AND theta_n >= 50°       -> 01 蓝色管/弯曲分支
-    B. theta_n <= 20°                            -> 03 水平管/划痕分支
-    C. theta_n >= 50° AND r_w <= 0.105           -> 02 倾斜窄管/暗斑分支
-    D. theta_n >= 50° AND r_w > 0.105            -> 04 倾斜宽管/杂质分支
+    A. 蓝色像素占比 >= 2%，并且管身角度 >= 50°  -> 01 蓝色管/弯曲分支
+    B. 管身角度 <= 20°                           -> 03 水平管/划痕分支
+    C. 管身角度 >= 50°，并且管宽比例 <= 10.5%   -> 02 倾斜窄管/暗斑分支
+    D. 管身角度 >= 50°，并且管宽比例 > 10.5%    -> 04 倾斜宽管/杂质分支
     E. 以上均不满足                              -> 通用模板差分兜底路径
 
 分流条件只决定“调用哪个缺陷算子”，不直接等于缺陷类别。除弯曲分支使用中心线曲率
@@ -1123,10 +1183,12 @@ OK/NORMAL。
 
 未知工位会与 `datas/01_01.bmp` 良品模板对齐。先根据两个 TubePose 进行旋转、缩放和
 平移粗配准，再使用 `cv2.findTransformECC(..., cv2.MOTION_TRANSLATION)` 进行仅平移的
-细配准：最大迭代次数 120，收敛精度 $10^{-5}$。若 ECC 分数小于 0.05，则改用
-`cv2.phaseCorrelate`。最终平移限制在 $\pm0.08W_t$，防止自由配准把真实缺陷抹掉。
+细配准：最大迭代次数 120，收敛精度为 0.00001。若 ECC 分数小于 0.05，则改用
+`cv2.phaseCorrelate`。最终平移被限制在正负“管宽的 8%”以内，防止自由配准把真实
+缺陷抹掉。
 
-对齐后的灰度 $I_a$ 按模板灰度 $I_t$ 的均值和标准差做曝光归一化：
+设 Ia 为对齐后的输入灰度，It 为模板灰度。程序按照两者的均值和标准差做曝光
+归一化：
 
     I_n = (I_a - mu_a) * clip(sigma_t/sigma_a, 0.75, 1.35) + mu_t
 
@@ -1148,7 +1210,8 @@ OK/NORMAL。
 二值差分图为 `Score >= T_diff`。之后用椭圆结构元素执行 OPEN 和两次 CLOSE，核半径
 为 `round(0.012*模板管宽)`。`cv2.findContours(RETR_EXTERNAL,
 CHAIN_APPROX_SIMPLE)` 将其转成 CandidateFeature 候选。候选公共面积范围为管身面积的
-$[0.00012,0.22]$。各类别的兜底判据再从这些候选中筛选。
+0.00012～0.22，也就是约占管身面积的 0.012%～22%。各类别的兜底判据再从这些
+候选中筛选。
 
 
 11.1 合格品 OK 判定逻辑与底层实现
@@ -1159,10 +1222,10 @@ $[0.00012,0.22]$。各类别的兜底判据再从这些候选中筛选。
 OK 不是一个独立的图像算子，而是“工位已识别，但相应缺陷证据不存在”或“所有兜底
 判据树均未触发”的最终状态。具体有五条互斥路径：
 
-    01 工位：r_blue >= 0.020 AND theta_n >= 50°，且 curvature_ratio < 0.0050；
-    03 工位：theta_n <= 20°，且 _locate_scratch() 没有合格连通域；
-    02 工位：theta_n >= 50° AND r_w <= 0.105，且 _locate_dark_spot() 返回 None；
-    04 工位：theta_n >= 50° AND r_w > 0.105，且 _locate_inclusion() 返回 None；
+    01 工位：蓝色占比 >= 2%、管身角度 >= 50°，且弯曲率 < 0.5%；
+    03 工位：管身角度 <= 20°，且划痕定位函数没有找到合格区域；
+    02 工位：管身角度 >= 50°、管宽比例 <= 10.5%，且暗斑定位函数没有找到合格区域；
+    04 工位：管身角度 >= 50°、管宽比例 > 10.5%，且杂质定位函数没有找到合格区域；
     兜底路径：弯曲、暗斑、划痕、杂质四棵判据树均返回 None。
 
 2. 核心图像处理算子与提取方法（重点）
@@ -1194,7 +1257,7 @@ OK 会实际运行所属工位的完整缺陷检测算子，而不是跳过检�
 
 OK 的具体反向条件为：
 
-    01：curvature_ratio < 0.0050；
+    01：弯曲率小于 0.0050，也就是小于 0.5%；
     03：不存在同时满足 11.4 全部条件的顶帽连通域；
     02：不存在同时满足 11.3 全部条件的 HSV 棕褐色连通域；
     04：不存在同时满足 11.5 全部条件的暗底帽连通域；
@@ -1215,8 +1278,9 @@ OK 没有红色缺陷框，而是用绿色框表示已检查的管身 ROI：
 
     [x_0, y_0]^T = [[1/s, 0], [0, 1/s]] * [x_w, y_w]^T
 
-转换后的多边形用 `cv2.boundingRect(round(points))` 得到 $(x,y,w,h)$，再裁剪到
-$[0,W_0)\times[0,H_0)$。
+转换后的多边形用 `cv2.boundingRect(round(points))` 得到
+“左上角 x、左上角 y、宽度 w、高度 h”，再裁剪到原图有效范围：横坐标 0～W0-1，
+纵坐标 0～H0-1。
 
 
 11.2 弯曲 Bending 判定逻辑与底层实现
@@ -1226,7 +1290,7 @@ $[0,W_0)\times[0,H_0)$。
 
 主路径弯曲检测只在 01 蓝色管工位触发：
 
-    r_blue >= 0.020 AND theta_n >= 50°
+    蓝色像素占比 >= 2%，并且管身角度 >= 50°
 
 当前样本的管件近似竖直，蓝色面积明显高于另外三个工位。分流后先计算中心线曲率，
 只有曲率达到 0.5% 才输出 BENDING。
@@ -1239,32 +1303,35 @@ $[0,W_0)\times[0,H_0)$。
 （1）边缘提取和管轴坐标变换
 
 预处理灰度图经过 `cv2.Canny(35,110)`。为了减少背景圆环干扰，算法构造宽度为
-$1.7W_t$ 的扩展管身旋转矩形，只保留矩形内的边缘点 $(x_i,y_i)$。
+1.7 倍管宽的扩展管身旋转矩形，只保留矩形内的边缘点。第 i 个边缘点记为
+(xi, yi)。
 
 定义管身主方向和法方向：
 
     d = [cos(theta), sin(theta)]^T
     q = [-sin(theta), cos(theta)]^T
 
-以 TubePose 中心 $c$ 为原点，每个边缘点转换为管轴坐标：
+以 TubePose 中心 c 为原点，每个边缘点转换为管轴坐标：
 
     t_i = (p_i-c)^T d        # 沿管长方向
     n_i = (p_i-c)^T q        # 沿管宽法向
 
 只保留：
 
-    |t_i| <= 0.48L AND |n_i| <= 0.85W_t
+    |ti| <= 0.48L，并且 |ni| <= 0.85Wt
 
 （2）切片中心提取
 
-在 $[-0.47L,0.47L]$ 上设置 25 个分割点，形成 24 个纵向切片。每个切片至少需要
+在管中心前后各 47% 管长的范围，也就是 -0.47L～0.47L 上设置 25 个分割点，形成
+24 个纵向切片。每个切片至少需要
 5 个法向边缘值。为降低反光毛丝和内部刻度线影响，不直接取最小/最大边缘，而取：
 
     n_low  = percentile(n, 12)
     n_high = percentile(n, 88)
     n_center = (n_low + n_high) / 2
 
-得到中心样本 $(t_j,n_j)$。有效切片少于 9 个时曲率返回 0。
+得到中心样本 (tj, nj)，其中 tj 是第 j 个切片沿管长的位置，nj 是该切片中心的横向
+偏移。有效切片少于 9 个时曲率返回 0。
 
 （3）二次曲线拟合与 MAD 离群点剔除
 
@@ -1287,7 +1354,8 @@ $1.7W_t$ 的扩展管身旋转矩形，只保留矩形内的边缘点 $(x_i,y_i)
 
 （4）最大偏离率
 
-在有效 $t$ 范围内均匀采样 80 个点，先计算二次平滑曲线 $n_hat(t)$，再对该平滑曲线
+在有效的管长坐标 t 范围内均匀采样 80 个点，先计算二次平滑曲线 n_hat(t)，再对该
+平滑曲线
 拟合最佳直线：
 
     n_line(t) = alpha*t + beta
@@ -1297,27 +1365,27 @@ $1.7W_t$ 的扩展管身旋转矩形，只保留矩形内的边缘点 $(x_i,y_i)
     d_max = max_t |n_hat(t) - n_line(t)|
     curvature_ratio = d_max / L
 
-这里并非严格微分几何曲率 $\kappa=|n''|/(1+n'^2)^{3/2}$，而是“中心线相对最佳直线
-的最大弓高/管长”。它具有直观、抗尺度变化和便于设定质量阈值的优点。
+这里并非严格的微分几何曲率公式，而是使用“中心线相对最佳直线的最大弓高 ÷ 管长”。
+这个指标更直观，也不容易受到图片分辨率变化影响，并且便于设置质量阈值。
 
 3. 缺陷判定决策树（Decision Rules & Thresholds）
 
 主路径为一个严格 AND 链：
 
-    r_blue >= 0.020
-    AND theta_n >= 50°
-    AND curvature_ratio >= 0.0050
-    -> BENDING
+    蓝色像素占比 >= 2%
+    并且 管身角度 >= 50°
+    并且 弯曲率 >= 0.0050（即 0.5%）
+    判定为 BENDING（弯曲）
 
 `0.0050` 即最大弓高达到管长的 0.5%。否则 01 工位输出 OK。
 
 兜底模板树要求：
 
-    curvature_excess = curvature_ratio - template_curvature_ratio
+    超出良品的弯曲率 = 输入图片弯曲率 - 良品模板弯曲率
 
-    curvature_excess >= 0.0075
-    AND curvature_ratio >= 0.010
-    -> BENDING
+    超出良品的弯曲率 >= 0.0075（即 0.75%）
+    并且 输入图片自身弯曲率 >= 0.010（即 1.0%）
+    判定为 BENDING（弯曲）
 
 即输入比良品至少多弯 0.75%，且自身绝对偏离至少为 1.0%。
 
@@ -1325,7 +1393,8 @@ $1.7W_t$ 的扩展管身旋转矩形，只保留矩形内的边缘点 $(x_i,y_i)
 
 （1）为什么锚定在直段与弯段交界处
 
-曲率指标 $d_max/L$ 负责回答“是否弯曲”，但当前主路径不使用 $d_max$ 对应的单个采样
+曲率指标“最大偏离 d_max ÷ 管长 L”负责回答“是否弯曲”，但当前主路径不使用最大
+偏离 d_max 对应的单个采样
 点直接画框。原因是弯曲属于从拐点开始持续到管端的分布式几何缺陷；只框最大偏离点
 会漏掉完整弯段。因此 `_blue_body_polygon` 另外使用横向切片宽度定位直弯交界。
 
@@ -1341,13 +1410,15 @@ $1.7W_t$ 的扩展管身旋转矩形，只保留矩形内的边缘点 $(x_i,y_i)
 
     C_s(y) = (1/9) * sum_{k=-4}^{4} C(y+k)
 
-透明直段只包含一条细蓝色中心线，$C_s(y)$ 较小；进入蓝色实体弯段后，蓝色区域在
+透明直段只包含一条细蓝色中心线，因此平滑后的每行蓝色像素数 C_s(y) 较小；进入
+蓝色实体弯段后，蓝色区域在
 横向突然扩展到接近管宽。第一个满足下式的切片被视为直弯交界锚点：
 
-    y_turn = first{y | C_s(y) >= 0.55W_t} - 4
+    y_turn = 第一个“平滑蓝色像素数 >= 55% 管宽 Wt”的行坐标，再减去 4
 
-减 4 是对 9 行居中窗口的半宽补偿，使锚点回到宽度突变开始处。程序将
-$y<y_turn$ 的蓝色像素清零，所以最终红框的上边界由该拐点切片锚定。
+减 4 是对 9 行居中窗口的半宽补偿，使锚点回到宽度突变开始处。y 小于 y_turn 表示
+拐点以上的直管区域。程序将这部分蓝色像素清零，所以最终红框的
+上边界由该拐点切片锚定。
 
 这是一种“颜色截面宽度突变 + 几何曲率确认”的联合推导：曲率确认缺陷存在，切片宽度
 突变确定弯段从哪里开始。它适用于当前 01 工位近似竖直且直弯交界伴随蓝色实体宽度
@@ -1355,9 +1426,10 @@ $y<y_turn$ 的蓝色像素清零，所以最终红框的上边界由该拐点切
 
 （2）从交界锚点生成完整弯段框
 
-保留 $y>=y_turn$ 的蓝色掩膜后，使用椭圆 CLOSE 连接反光造成的小孔洞：
+保留 y 大于或等于 y_turn 的蓝色掩膜，也就是只保留拐点及其以下的弯曲区域。随后
+使用椭圆 CLOSE 连接反光造成的小孔洞：
 
-    k = odd(max(3, round(0.06W_t)))
+    Kernel 边长 = 3 与“6% 管宽”的较大值，并调整为奇数
     mask = morphologyEx(mask, MORPH_CLOSE, ellipse(k,k))
 
 随后：
@@ -1371,9 +1443,10 @@ $y<y_turn$ 的蓝色像素清零，所以最终红框的上边界由该拐点切
 
 （3）坐标映射
 
-主路径凸包位于工作图坐标，逐点执行 $(x_0,y_0)=(x_w/s,y_w/s)$ 回原图，再通过
-`cv2.boundingRect` 得到 JSON 中的 $(x,y,w,h)$。兜底路径没有局部候选框，使用模板
-管身 polygon，经 `inverse(input_to_template)` 和 $1/s$ 缩放映射回原图。
+主路径凸包位于工作图坐标。每个点的原图横坐标等于“工作图横坐标 ÷ s”，原图
+纵坐标等于“工作图纵坐标 ÷ s”。转换后通过 `cv2.boundingRect` 得到 JSON 中的
+“左上角 x、左上角 y、宽度 w、高度 h”。兜底路径没有局部候选框，使用模板管身
+polygon，经 `inverse(input_to_template)` 反变换后，再按 1 ÷ s 放大并映射回原图。
 
 
 11.3 暗斑 Dark Spot 判定逻辑与底层实现
@@ -1397,7 +1470,7 @@ $y<y_turn$ 的蓝色像素清零，所以最终红框的上边界由该拐点切
 输入 BGR 工作图通过 `cv2.cvtColor(..., COLOR_BGR2HSV)` 转换。TubePose.polygon 被填充
 为管身掩膜，再用椭圆结构元素向内腐蚀：
 
-    r_e = max(1, round(0.12W_t))
+    腐蚀半径 = 1 与“12% 管宽”的较大值
     K_e = ellipse(2r_e+1, 2r_e+1)
     M_inner = erode(M_tube, K_e)
 
@@ -1446,8 +1519,9 @@ OpenCV 的 H 范围为 0～179。低 H、高于透明管的饱和度和非过曝
 
     Delta G = mean(G_Ring) - mean(G_Component)
 
-$\Delta G>0$ 表示斑点比周围暗。当前代码将 `local_darkness=Delta G` 写入特征和报告，
-但主路径没有再用一个单独的 $\Delta G$ 阈值二次否决；真正的硬触发来自 HSV、面积、
+灰度差 Delta G 大于 0，表示斑点比周围暗。当前代码将
+`local_darkness=Delta G` 写入特征和报告，但主路径没有再用一个单独的 Delta G
+阈值二次否决；真正的硬触发来自 HSV、面积、
 形状和位置条件。文档必须区分“报告指标”和“决策硬阈值”。
 
 兜底路径则使用模板差分候选。候选暗度计算为：
@@ -1462,8 +1536,8 @@ $\Delta G>0$ 表示斑点比周围暗。当前代码将 `local_darkness=Delta G`
 
 主路径必须存在至少一个连通域同时满足：
 
-    area >= max(8, 0.003W_t^2)
-    AND area <= 0.15W_t^2
+    面积 >= 8 像素与“0.3% 管宽平方”的较大值
+    并且 面积 <= 15% 管宽平方
     AND aspect <= 4.0
     AND rho_axis <= 0.46
     AND HSV 像素条件 H<=35, S>=35, V<=225
@@ -1482,13 +1556,15 @@ $\Delta G>0$ 表示斑点比周围暗。当前代码将 `local_darkness=Delta G`
 
 4. 缺陷框（Bounding Box）生成与坐标映射机制
 
-ROI 锚点就是最佳 HSV 连通域的 `connectedComponentsWithStats` 外接矩形
-$(x_c,y_c,w_c,h_c)$。为了让小斑点在结果图中可见，在工作图加入：
+ROI 锚点就是最佳 HSV 连通域的 `connectedComponentsWithStats` 外接矩形。这个矩形
+包含左上角坐标 (xc, yc)、宽度 wc 和高度 hc。为了让小斑点在结果图中可见，在工作图
+加入：
 
-    padding = max(5, round(0.12W_t))
+    扩边像素数 = 5 与“12% 管宽”的较大值
 
-得到四点轴对齐 polygon，并裁剪到工作图边界。随后所有点除以 $s$ 回到原图，最后
-由 `clipped_bbox` 输出原图 $(x,y,w,h)$。兜底路径使用 `cv2.minAreaRect` 对差分轮廓
+得到四点轴对齐 polygon，并裁剪到工作图边界。随后所有点的坐标都除以缩放比例 s，
+回到原图。最后由 `clipped_bbox` 输出原图中的“左上角 x、左上角 y、宽度 w、高度 h”。
+兜底路径使用 `cv2.minAreaRect` 对差分轮廓
 生成旋转矩形，再通过模板逆仿射矩阵映射到原图。
 
 
@@ -1507,8 +1583,9 @@ $(x_c,y_c,w_c,h_c)$。为了让小斑点在结果图中可见，在工作图加�
 
     0.08S <= gap <= 0.18S,  expected_gap = 0.13S
 
-边缘对中点与原中心的差不超过 $0.12H$。评分包含 gap 高斯先验和 center 高斯先验，
-最终用最佳上下边缘修正管中心 y 和管宽 $W_t$，避免内部反光线被误当成管壁。
+边缘对中点与原中心的差不超过图像高度 H 的 12%。评分包含管壁间距 gap 的高斯先验
+和管中心 center 的高斯先验，最终用最佳上下边缘修正管中心 y 和管宽 Wt，避免内部
+反光线被误当成管壁。
 
 2. 核心图像处理算子与提取方法（重点）
 
@@ -1519,9 +1596,9 @@ $(x_c,y_c,w_c,h_c)$。为了让小斑点在结果图中可见，在工作图加�
     TopHat(I,K) = I - Open(I,K)
     Open(I,K) = Dilate(Erode(I,K),K)
 
-其中 $I$ 为 `cv2.cvtColor(BGR2GRAY)` 得到的灰度图。结构元素为椭圆：
+其中 I 表示 `cv2.cvtColor(BGR2GRAY)` 得到的灰度图。结构元素为椭圆：
 
-    k_top = odd(max(9, round(0.20W_t)))
+    顶帽 Kernel 边长 = 9 与“20% 管宽”的较大值，并调整为奇数
     K_top = ellipse(k_top, k_top)
 
 开运算会移除尺寸小于 Kernel 的亮结构，再用原图减开运算结果，便突出局部亮划痕；
@@ -1529,7 +1606,7 @@ $(x_c,y_c,w_c,h_c)$。为了让小斑点在结果图中可见，在工作图加�
 
 管身 polygon 填充后用椭圆核向内腐蚀：
 
-    r_e = max(1, round(0.16W_t))
+    腐蚀半径 = 1 与“16% 管宽”的较大值
     M_inner = erode(M_tube, ellipse(2r_e+1, 2r_e+1))
 
 顶帽响应二值化：
@@ -1538,14 +1615,15 @@ $(x_c,y_c,w_c,h_c)$。为了让小斑点在结果图中可见，在工作图加�
 
 然后使用方形全 1 Kernel 执行 CLOSE：
 
-    k_close = odd(max(3, round(0.03W_t)))
+    闭运算 Kernel 边长 = 3 与“3% 管宽”的较大值，并调整为奇数
     M_scratch = close(M_scratch, ones(k_close,k_close))
 
 CLOSE 是先膨胀后腐蚀，用于连接 V 形划痕中被反光切断的小间隙。
 
 （2）连通域形状、位置和评分
 
-`connectedComponentsWithStats` 产生 $(x,y,w,h,area)$ 和 centroid。当前 V 形划痕不是
+`connectedComponentsWithStats` 为每个区域产生左上角坐标 (x, y)、宽度 w、高度 h、
+像素面积 area 和质心 centroid。当前 V 形划痕不是
 无限细直线，因此外接框需要“相对紧凑”，其宽高比定义为：
 
     box_ratio = w / h
@@ -1571,7 +1649,7 @@ Top-Hat 计算 `原灰度 - 开运算结果`，响应对象是“比邻域更亮
     phi_i = atan2(G_y, G_x)
     m_i = sqrt(G_x^2 + G_y^2)
 
-因为梯度方向 $\phi$ 与 $\phi+\pi$ 表示同一条无方向直线，使用二倍角：
+因为一个梯度方向 phi 和“phi 加 180°”表示同一条无方向直线，所以使用二倍角：
 
     coherence = sqrt(
         (sum m_i*cos(2phi_i))^2 +
@@ -1586,11 +1664,11 @@ coherence 越接近 1，表示候选梯度方向越一致，越像线状划痕�
 
     theta_n <= 20°
     AND TopHat >= scratch_tophat_threshold = 20
-    AND area >= max(30, 0.004W_t^2)
-    AND area <= 0.25W_t^2
+    并且 面积 >= 30 像素与“0.4% 管宽平方”的较大值
+    并且 面积 <= 25% 管宽平方
     AND 0.5 <= w/h <= 3.0
-    AND max(w,h) <= 1.4W_t
-    AND h >= 0.15W_t
+    并且 外接框最长边 <= 1.4 倍管宽
+    并且 外接框高度 >= 15% 管宽
     AND rho_axis <= 0.40
 
 多个合格候选选择 `C_top*sqrt(area)*exp(-2*rho_axis)` 最大者。找到则为 SCRATCH，
@@ -1611,10 +1689,11 @@ V 形划痕使用相对紧凑的 box_ratio；兜底路径面向一般长线划�
 
 红框锚定在最佳顶帽连通域的 `connectedComponentsWithStats` 外接矩形。工作图扩边：
 
-    padding = max(4, round(0.05W_t))
+    扩边像素数 = 4 与“5% 管宽”的较大值
 
-扩边后的轴对齐四点 polygon 先裁剪到工作图，再逐点除以 $s$ 映射回原图，最后由
-`cv2.boundingRect` 生成 JSON 中的 $(x,y,w,h)$。兜底路径使用差分轮廓的
+扩边后的轴对齐四点 polygon 先裁剪到工作图，再把每个点的坐标除以缩放比例 s，
+映射回原图。最后由 `cv2.boundingRect` 生成 JSON 中的“左上角 x、左上角 y、宽度 w、
+高度 h”。兜底路径使用差分轮廓的
 `cv2.minAreaRect + cv2.boxPoints`，因此可得到随划痕方向旋转的框，再通过模板逆变换
 回原图。
 
@@ -1644,7 +1723,7 @@ V 形划痕使用相对紧凑的 box_ratio；兜底路径面向一般长线划�
 
 灰度图来自 `cv2.cvtColor(BGR2GRAY)`。结构元素为椭圆：
 
-    k_black = odd(max(9, round(0.13W_t)))
+    底帽 Kernel 边长 = 9 与“13% 管宽”的较大值，并调整为奇数
     K_black = ellipse(k_black, k_black)
 
 闭运算会填平尺寸小于 Kernel 的暗孔洞，再减去原图，使局部暗颗粒产生正响应。二值
@@ -1695,10 +1774,10 @@ V 形划痕使用相对紧凑的 box_ratio；兜底路径面向一般长线划�
     theta_n >= 50°
     AND r_w > 0.105
     AND BlackHat >= inclusion_blackhat_threshold = 30
-    AND area >= max(10, 0.0006W_t^2)
-    AND area <= 0.08W_t^2
+    并且 面积 >= 10 像素与“0.06% 管宽平方”的较大值
+    并且 面积 <= 8% 管宽平方
     AND aspect <= 3.0
-    AND max(w,h) <= 0.35W_t
+    并且 外接框最长边 <= 35% 管宽
     AND rho_axis <= 0.42
 
 多个候选选择 `C_black*sqrt(area)*exp(-6*rho_axis)` 最大者。找到则输出 INCLUSION，
@@ -1715,12 +1794,14 @@ V 形划痕使用相对紧凑的 box_ratio；兜底路径面向一般长线划�
 
 4. 缺陷框（Bounding Box）生成与坐标映射机制
 
-红框锚定在最高分 Black-Hat 连通域的外接矩形 $(x_c,y_c,w_c,h_c)$，工作图扩边：
+红框锚定在最高分 Black-Hat 连通域的外接矩形。这个矩形包含左上角坐标 (xc, yc)、
+宽度 wc 和高度 hc。工作图扩边：
 
-    padding = max(6, round(0.10W_t))
+    扩边像素数 = 6 与“10% 管宽”的较大值
 
-扩边使颗粒簇周围保留少量上下文。四点 polygon 裁剪到工作图后，以 $1/s$ 缩放回原图，
-再转换为最终 $(x,y,w,h)$。兜底路径使用差分轮廓的最小旋转矩形；映射链为：
+扩边使颗粒簇周围保留少量上下文。四点 polygon 裁剪到工作图后，横纵坐标都除以
+缩放比例 s，从而放大回原图，再转换为最终的“左上角 x、左上角 y、宽度 w、高度 h”。
+兜底路径使用差分轮廓的最小旋转矩形；映射链为：
 
     template candidate polygon
         --inverse(input_to_template)--> working-image polygon
@@ -1807,7 +1888,7 @@ V 形划痕，Black-Hat 定位相对局部背景更暗的紧凑杂质颗粒。
 7. 当前结果只能视为可解释的传统视觉基线，不能直接作为量产质量标准。
 
 
-十五、最常用的两个命令
+十五、最常用的三个命令
 ----------------------
 
 1. 检测全部 datas 图片：
@@ -1819,3 +1900,8 @@ V 形划痕，Black-Hat 定位相对局部背景更暗的紧凑杂质颗粒。
     python3 cli.py path/to/new_image.bmp \
         --output results/new_image_result.jpg \
         --json results/new_image_result.json
+
+3. 检测全部图片并导出四类缺陷的完整处理过程：
+
+    python3 cli.py --batch datas --output-dir results \
+        --export-pipeline process_debug_output

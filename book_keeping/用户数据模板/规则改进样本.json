@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "purpose": "用于根据用户确认的 true value 改进记账导入规则",
+  "privacyNote": "只包含异常原文、必要定位信息和用户确认结果，不包含普通流水或整份工作簿。",
+  "exportedAt": "",
+  "sampleCount": 0,
+  "samples": []
+}

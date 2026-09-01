@@ -1,0 +1,2 @@
+{"id":"api-001","request":{"message":"解释什么是结构化输出"},"expected_status":200,"expected_fields":["answer","response_id","request_id"]}
+{"id":"api-002","request":{"message":""},"expected_status":422}

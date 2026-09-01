@@ -27,7 +27,22 @@ datas/4_02.bmp ：杂质
    - results/*_result.jpg：红框缺陷图；良品用绿框表示管身。
    - results/summary.json：每张图的类别、坐标、位置说明和特征值。
 
-2. 输入任意一张额外图片：
+2. 批量检测并导出完整的图像处理过程：
+
+   python3 cli.py --batch datas --output-dir results \
+       --export-pipeline process_debug_output
+
+   程序会先正常检测全部图片，再从检测结果中自动选出弯曲、暗斑、划痕、杂质
+   各 1 张样本，重新运行并记录关键步骤。程序会生成：
+   - process_debug_output/*_stepNN_*.png：按执行顺序编号的中间处理图；
+   - process_debug_output/pipeline_explanation.txt：每一步使用的 OpenCV/NumPy
+     算子、输入输出及设计目的；
+   - 终端中的“过程可视化样本”列表：显示每种缺陷实际选中了哪张原图。
+
+   --export-pipeline 后面的目录可以省略；省略时默认写入
+   process_debug_output。该参数只在 --batch 模式下有效。
+
+3. 输入任意一张额外图片：
 
    python3 cli.py path/to/new_image.bmp \
        --output results/new_image_result.jpg \
@@ -35,7 +50,7 @@ datas/4_02.bmp ：杂质
 
    location_bbox 的格式是 [x, y, width, height]，坐标对应输入原图，而不是缩略图。
 
-3. 在 Python 代码中调用：
+4. 在 Python 代码中调用：
 
    from tube_inspection import detect_tube
 
